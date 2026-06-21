@@ -4,6 +4,7 @@ import { HealthModule } from './health/health.module';
 import { SessionModule } from './session/session.module';
 import { TestModule } from './test/test.module';
 import { WebsocketModule } from './websocket/websocket.module';
+import { ContextModule } from './context/context.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { WebsocketModule } from './websocket/websocket.module';
     TestModule,
     WebsocketModule,
     ConfigModule,
+    ContextModule,
   ],
   controllers: [],
   providers: [],

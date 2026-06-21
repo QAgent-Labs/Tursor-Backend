@@ -9,6 +9,7 @@ type SocketEvent =
   | { type: 'complete'; status: 'success' | 'fail' };
 
 @WebSocketGateway({
+  path: '/ws',
   namespace: '/ws',
   cors: { origin: '*' },
 })
