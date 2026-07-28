@@ -1,30 +1,109 @@
 import { Injectable } from '@nestjs/common';
 
-type FileMap = Map<string, boolean>;
+export interface WorkspaceContext {
+  workspacePath: string;
+  frontendPort: number | null;
+  connected: boolean;
+  lastUpdated: Date;
+  contextReady: boolean;
+  embeddingsDir: string | null;
+}
+
+export interface WorkspaceContextResponse {
+  workspacePath: string | null;
+  frontendPort: number | null;
+  connected: boolean;
+  contextReady: boolean;
+}
 
 @Injectable()
 export class ContextService {
-  private rootPath = '';
-  private files: FileMap = new Map();
+  private context: WorkspaceContext | null = null;
 
-  init(rootPath: string) {
-    this.rootPath = rootPath;
-    this.files.clear();
-
-    console.log('[Context] Initialized with root:', rootPath);
+  setWorkspaceContext(
+    workspacePath: string,
+    frontendPort?: number | null,
+  ): void {
+    this.context = {
+      workspacePath,
+      frontendPort:
+        typeof frontendPort === 'number' && frontendPort > 0
+          ? frontendPort
+          : (this.context?.frontendPort ?? null),
+      connected: true,
+      lastUpdated: new Date(),
+      contextReady: this.context?.contextReady ?? false,
+      embeddingsDir: this.context?.embeddingsDir ?? null,
+    };
   }
 
-  updateFile(path: string) {
-    this.files.set(path, true);
-
-    console.log('[Context] File updated:', path);
+  setFrontendPort(port: number | null): void {
+    if (!this.context) {
+      return;
+    }
+    this.context = {
+      ...this.context,
+      frontendPort: port,
+      lastUpdated: new Date(),
+    };
   }
 
-  getRootPath() {
-    return this.rootPath;
+  getWorkspacePath(): string | null {
+    return this.context?.workspacePath ?? null;
   }
 
-  getAllFiles() {
-    return Array.from(this.files.keys());
+  getFrontendPort(): number | null {
+    return this.context?.frontendPort ?? null;
+  }
+
+  markContextReady(meta: {
+    embeddingsDir: string;
+    filesIndexed: number;
+    chunksIndexed: number;
+    model: string;
+  }): void {
+    if (!this.context) {
+      return;
+    }
+    this.context = {
+      ...this.context,
+      contextReady: true,
+      embeddingsDir: meta.embeddingsDir,
+      lastUpdated: new Date(),
+    };
+  }
+
+  resetContextReady(): void {
+    if (!this.context) {
+      return;
+    }
+    this.context = {
+      ...this.context,
+      contextReady: false,
+      embeddingsDir: null,
+      lastUpdated: new Date(),
+    };
+  }
+
+  getWorkspaceContext(): WorkspaceContextResponse {
+    if (!this.context) {
+      return {
+        workspacePath: null,
+        frontendPort: null,
+        connected: false,
+        contextReady: false,
+      };
+    }
+
+    return {
+      workspacePath: this.context.workspacePath,
+      frontendPort: this.context.frontendPort,
+      connected: this.context.connected,
+      contextReady: this.context.contextReady,
+    };
+  }
+
+  clearWorkspaceContext(): void {
+    this.context = null;
   }
 }

@@ -1,25 +1,33 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { ContextService } from './context.service';
+import { WorkspaceConfigValidator } from './workspace-config.validator';
 
 @Controller('context')
 export class ContextController {
-  constructor(private readonly contextService: ContextService) {}
+  constructor(
+    private readonly contextService: ContextService,
+    private readonly validator: WorkspaceConfigValidator,
+  ) {}
 
-  @Post('init')
-  init(@Body() body: { rootPath: string }) {
-    this.contextService.init(body.rootPath);
-
-    return {
-      status: 'ok',
-    };
+  @Get('current')
+  getCurrentContext() {
+    return this.contextService.getWorkspaceContext();
   }
 
-  @Post('update')
-  update(@Body() body: { path: string }) {
-    this.contextService.updateFile(body.path);
-
+  @Get('validate')
+  validateWorkspaceConfig() {
+    const path = this.contextService.getWorkspacePath();
+    if (!path) {
+      return { ok: false, error: 'No workspace path set.' };
+    }
+    const result = this.validator.validate(path);
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
     return {
-      status: 'received',
+      ok: true,
+      configPath: result.configPath,
+      excluded: result.excluded,
     };
   }
 }
