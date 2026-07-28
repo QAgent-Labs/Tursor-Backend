@@ -54,6 +54,8 @@ export class RunOrchestratorService {
     this.gateway.emit({ type: 'context_building' });
 
     try {
+      await this.tursorAi.ensureReady();
+
       const local = this.validator.validate(workspacePath);
       if (!local.ok) {
         this.gateway.emit({

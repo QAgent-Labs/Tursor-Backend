@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { TursorAiRuntimeService } from './tursor-ai-runtime.service';
 
 export type TursorAiEmbedResult = {
   directory_path: string;
@@ -13,13 +13,14 @@ export type TursorAiEmbedResult = {
 export class TursorAiClient {
   private readonly logger = new Logger(TursorAiClient.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private readonly runtime: TursorAiRuntimeService) {}
+
+  async ensureReady(): Promise<void> {
+    await this.runtime.refresh();
+  }
 
   private baseUrl(): string {
-    const raw =
-      this.configService.get<string>('TURSOR_AI_URL') ??
-      'http://127.0.0.1:8000';
-    return raw.replace(/\/$/, '');
+    return this.runtime.resolveBaseUrl();
   }
 
   async validate(
