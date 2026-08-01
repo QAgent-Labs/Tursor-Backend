@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
-import { TursorAiClient } from '../tursor-ai/tursor-ai.client';
+// import { TursorAiClient } from '../tursor-ai/tursor-ai.client';
 import { ContextService } from '../context/context.service';
 import { CdpRunnerService } from '../cdp/cdp-runner.service';
 import { WorkspaceConfigValidator } from '../context/workspace-config.validator';
@@ -13,7 +13,7 @@ export class RunOrchestratorService {
   constructor(
     private readonly contextService: ContextService,
     private readonly validator: WorkspaceConfigValidator,
-    private readonly tursorAi: TursorAiClient,
+    // private readonly tursorAi: TursorAiClient,
     private readonly cdpRunner: CdpRunnerService,
     @Inject(forwardRef(() => WebsocketGateway))
     private readonly gateway: WebsocketGateway,
@@ -51,11 +51,8 @@ export class RunOrchestratorService {
     }
 
     this.building = true;
-    this.gateway.emit({ type: 'context_building' });
 
     try {
-      await this.tursorAi.ensureReady();
-
       const local = this.validator.validate(workspacePath);
       if (!local.ok) {
         this.gateway.emit({
@@ -66,34 +63,19 @@ export class RunOrchestratorService {
         return;
       }
 
-      const remote = await this.tursorAi.validate(workspacePath);
-      if (!remote.ok) {
-        this.gateway.emit({
-          type: 'context_error',
-          code: 'tursor_ai_validate',
-          message: remote.error ?? 'Tursor-AI validation failed',
-        });
-        return;
-      }
+      /* Tursor-AI embed disabled for now — skip remote validate/embed and go straight to CDP. */
+      // this.gateway.emit({ type: 'context_building' });
+      // await this.tursorAi.ensureReady();
+      // const remote = await this.tursorAi.validate(workspacePath);
+      // if (!remote.ok) { ... }
+      // const embed = await this.tursorAi.embed(workspacePath);
+      // this.contextService.markContextReady({ ... });
 
-      this.gateway.emit({
-        type: 'log',
-        stepId: 'context',
-        message: 'Building embeddings via Tursor-AI…',
-      });
-
-      const embed = await this.tursorAi.embed(workspacePath);
       this.contextService.markContextReady({
-        embeddingsDir: embed.embeddings_dir,
-        filesIndexed: embed.files_indexed,
-        chunksIndexed: embed.chunks_indexed,
-        model: embed.model,
-      });
-
-      this.gateway.emit({
-        type: 'log',
-        stepId: 'context',
-        message: `Indexed ${embed.files_indexed} files (${embed.chunks_indexed} chunks).`,
+        embeddingsDir: '',
+        filesIndexed: 0,
+        chunksIndexed: 0,
+        model: 'disabled',
       });
       this.gateway.emit({ type: 'context_ready' });
 
