@@ -34,36 +34,59 @@ export class CdpRunnerService {
       this.screenshotStorage.createRunDirectory(workspacePath);
     this.screenshotStorage.registerRunLocation(runId, dir);
     const useSupabase = this.supabaseScreenshots.isConfigured();
+
+    callbacks.onLog(
+      'run',
+      `CDP run ${runId} started (headless=${headless}, slowMo=${slowMo}).`,
+    );
+    callbacks.onLog('run', `Target frontend: ${baseUrl}`);
+    callbacks.onLog('run', `Screenshot directory: ${dir}`);
+    callbacks.onLog('run', `Total demo steps: ${steps.length}`);
+
     if (useSupabase) {
       callbacks.onLog(
         'run',
-        '[CDP] Screenshots → Supabase Storage (public URLs)',
+        'Screenshot storage: Supabase (public URLs).',
+      );
+    } else {
+      callbacks.onLog(
+        'run',
+        'Screenshot storage: local filesystem (served by backend).',
       );
     }
 
     let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
     try {
+      callbacks.onLog('run', 'Launching Chromium…');
       browser = await chromium.launch({ headless, slowMo });
       const context = await browser.newContext({
         viewport: { width: 1280, height: 720 },
       });
       const page = await context.newPage();
-
       callbacks.onLog(
         'run',
-        `[CDP] Launched Chromium (headless=${headless}) → ${baseUrl}`,
+        `Chromium ready (viewport 1280×720, headless=${headless}).`,
       );
 
       for (const step of steps) {
         callbacks.onStep(step.id, step.label);
+        callbacks.onLog(step.id, `Step "${step.label}" — ${step.actions.length} action(s).`);
+
         for (const action of step.actions) {
-          callbacks.onLog(step.id, `[CDP] ${describeAction(action, baseUrl)}`);
-          await this.executeAction(page, action, baseUrl);
+          const actionDesc = describeAction(action, baseUrl);
+          callbacks.onLog(step.id, `Executing: ${actionDesc}`);
+          await this.executeAction(page, action, baseUrl, (msg) =>
+            callbacks.onLog(step.id, msg),
+          );
+          callbacks.onLog(step.id, `Completed: ${actionDesc}`);
         }
+
+        callbacks.onLog(step.id, 'Capturing screenshot…');
         const buffer = await page.screenshot({ type: 'png', fullPage: false });
         let url: string;
         if (useSupabase) {
+          callbacks.onLog(step.id, 'Uploading screenshot to Supabase…');
           url = await this.supabaseScreenshots.uploadPng(
             runId,
             step.id,
@@ -74,19 +97,22 @@ export class CdpRunnerService {
           url = this.screenshotStorage.publicScreenshotUrl(runId, step.id);
         }
         callbacks.onScreenshot(step.id, url);
+        callbacks.onLog(step.id, `Screenshot saved (${url}).`);
       }
 
-      callbacks.onLog('run', '[CDP] Demo flow finished successfully.');
+      callbacks.onLog('run', 'Demo flow finished successfully.');
       callbacks.onComplete('success');
       this.logger.log(`CDP run ${runId} completed for ${baseUrl}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`CDP run failed: ${message}`);
-      callbacks.onLog('run', `[CDP] Failed: ${message}`);
+      callbacks.onLog('run', `CDP run failed: ${message}`);
       callbacks.onComplete('fail');
     } finally {
       if (browser) {
+        callbacks.onLog('run', 'Closing Chromium browser…');
         await browser.close().catch(() => undefined);
+        callbacks.onLog('run', 'Chromium closed.');
       }
     }
   }
@@ -95,6 +121,7 @@ export class CdpRunnerService {
     page: Page,
     action: CdpAction,
     baseUrl: string,
+    onDetail: (message: string) => void,
   ): Promise<void> {
     switch (action.type) {
       case 'navigate': {
@@ -102,19 +129,28 @@ export class CdpRunnerService {
         const url = pathPart.startsWith('http')
           ? pathPart
           : `${baseUrl.replace(/\/$/, '')}${pathPart.startsWith('/') ? pathPart : `/${pathPart}`}`;
+        onDetail(`Navigating to ${url}…`);
         await page.goto(url, {
           waitUntil: 'domcontentloaded',
           timeout: 30_000,
         });
+        onDetail(`Navigation complete (${url}).`);
         return;
       }
       case 'click':
+        onDetail(`Clicking first matching selector from [${action.selectors.join(', ')}]…`);
         await this.clickFirstMatch(page, action.selectors);
+        onDetail('Click action completed.');
         return;
       case 'fill':
+        onDetail(
+          `Filling first matching selector from [${action.selectors.join(', ')}] with value "${action.value}"…`,
+        );
         await this.fillFirstMatch(page, action.selectors, action.value);
+        onDetail('Fill action completed.');
         return;
       case 'waitForText':
+        onDetail(`Waiting for visible text "${action.text}"…`);
         await page
           .getByText(action.text, { exact: false })
           .first()
@@ -122,13 +158,18 @@ export class CdpRunnerService {
             state: 'visible',
             timeout: action.timeoutMs ?? 15_000,
           });
+        onDetail(`Text "${action.text}" is visible.`);
         return;
       case 'waitForPath': {
         const fragment = action.pathIncludes;
         const timeout = action.timeoutMs ?? 15_000;
+        onDetail(
+          `Waiting for URL pathname to include "${fragment}" (timeout ${timeout}ms)…`,
+        );
         await page.waitForURL((url) => url.pathname.includes(fragment), {
           timeout,
         });
+        onDetail(`URL pathname now includes "${fragment}".`);
         return;
       }
       default: {
