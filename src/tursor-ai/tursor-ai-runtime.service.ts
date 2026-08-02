@@ -36,7 +36,8 @@ export class TursorAiRuntimeService implements OnModuleInit {
       return fromRuntime;
     }
     const raw =
-      this.configService.get<string>('TURSOR_AI_URL') ?? 'http://127.0.0.1:8000';
+      this.configService.get<string>('TURSOR_AI_URL') ??
+      'http://127.0.0.1:8000';
     return raw.replace(/\/$/, '');
   }
 
@@ -102,15 +103,11 @@ export class TursorAiRuntimeService implements OnModuleInit {
   private async probeViaCli(): Promise<string | null> {
     const cli = this.tursorAiCliPath();
     try {
-      const { stdout } = await execFileAsync(
-        cli,
-        ['port', '--json'],
-        {
-          env: this.cliEnv(),
-          timeout: 8_000,
-          maxBuffer: 4096,
-        },
-      );
+      const { stdout } = await execFileAsync(cli, ['port', '--json'], {
+        env: this.cliEnv(),
+        timeout: 8_000,
+        maxBuffer: 4096,
+      });
       const data = JSON.parse(stdout.trim()) as PortJson;
       if (data.running && data.origin) {
         return data.origin.replace(/\/$/, '');

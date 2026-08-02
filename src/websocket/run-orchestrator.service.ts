@@ -3,6 +3,7 @@ import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import { ContextService } from '../context/context.service';
 import { CdpRunnerService } from '../cdp/cdp-runner.service';
 import { WorkspaceConfigValidator } from '../context/workspace-config.validator';
+import type { WorkspaceSupabaseConfig } from '../context/workspace-config.types';
 import { WebsocketGateway } from './websocket.gateway';
 import type { CdpRunCallbacks } from '../cdp/cdp-step.types';
 
@@ -39,8 +40,7 @@ export class RunOrchestratorService {
   private cdpCallbacks(): CdpRunCallbacks {
     return {
       onStep: (stepId, label) => this.gateway.sendStepUpdate(stepId, label),
-      onLog: (stepId, message) =>
-        this.gateway.sendLog(stepId, message, 'cdp'),
+      onLog: (stepId, message) => this.gateway.sendLog(stepId, message, 'cdp'),
       onScreenshot: (stepId, url) => this.gateway.sendScreenshot(stepId, url),
       onComplete: (status) => this.gateway.sendComplete(status),
     };
@@ -48,7 +48,7 @@ export class RunOrchestratorService {
 
   private validateWorkspaceOrEmitError(
     workspacePath: string,
-  ): { ok: true } | { ok: false } {
+  ): { ok: true; supabase: WorkspaceSupabaseConfig } | { ok: false } {
     this.gateway.emitRunLog({
       category: 'context',
       level: 'info',
@@ -65,9 +65,10 @@ export class RunOrchestratorService {
     this.gateway.emitRunLog({
       category: 'context',
       level: 'success',
-      message: 'Local workspace config validation passed.',
+      message:
+        'Local workspace config validation passed (supabase settings loaded).',
     });
-    return { ok: true };
+    return { ok: true, supabase: local.supabase };
   }
 
   /** Run Playwright demo steps against the session frontend port (Run screen entry). */
@@ -76,7 +77,8 @@ export class RunOrchestratorService {
       this.gateway.emitRunLog({
         category: 'cdp',
         level: 'warn',
-        message: 'CDP demo already running — wait for it to finish or click Refresh.',
+        message:
+          'CDP demo already running — wait for it to finish or click Refresh.',
       });
       return;
     }
@@ -133,6 +135,7 @@ export class RunOrchestratorService {
       await this.cdpRunner.runDemoFlow(
         frontendPort,
         workspacePath,
+        validated.supabase,
         this.cdpCallbacks(),
       );
     } catch (err) {

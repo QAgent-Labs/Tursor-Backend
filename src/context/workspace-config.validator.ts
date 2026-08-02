@@ -1,10 +1,31 @@
 import { Injectable } from '@nestjs/common';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type {
+  WorkspaceSupabaseConfig,
+  WorkspaceTursorConfig,
+} from './workspace-config.types';
 
 export type WorkspaceConfigValidation =
-  | { ok: true; excluded: string[]; configPath: string }
+  | {
+      ok: true;
+      excluded: string[];
+      configPath: string;
+      supabase: WorkspaceSupabaseConfig;
+    }
   | { ok: false; error: string };
+
+function readNonEmptyString(
+  value: unknown,
+  fieldLabel: string,
+): string | { error: string } {
+  if (typeof value !== 'string' || !value.trim()) {
+    return {
+      error: `"${fieldLabel}" must be a non-empty string in .tursor/config.json`,
+    };
+  }
+  return value.trim();
+}
 
 @Injectable()
 export class WorkspaceConfigValidator {
@@ -33,25 +54,66 @@ export class WorkspaceConfigValidator {
       return { ok: false, error: `${configPath} must be a JSON object` };
     }
 
-    const excludedRaw = (raw as { excluded?: unknown }).excluded;
+    const config = raw as Partial<WorkspaceTursorConfig> & {
+      supabase?: Record<string, unknown>;
+    };
+
+    const excludedRaw = config.excluded;
     if (excludedRaw === undefined) {
-      return { ok: true, excluded: [], configPath };
-    }
-    if (!Array.isArray(excludedRaw)) {
+      /* optional */
+    } else if (!Array.isArray(excludedRaw)) {
       return { ok: false, error: '"excluded" must be an array' };
-    }
-
-    const excluded: string[] = [];
-    for (const item of excludedRaw) {
-      if (typeof item !== 'string' || !item.trim()) {
-        return {
-          ok: false,
-          error: '"excluded" entries must be non-empty strings',
-        };
+    } else {
+      for (const item of excludedRaw) {
+        if (typeof item !== 'string' || !item.trim()) {
+          return {
+            ok: false,
+            error: '"excluded" entries must be non-empty strings',
+          };
+        }
       }
-      excluded.push(item.trim());
     }
 
-    return { ok: true, excluded, configPath };
+    const excluded = Array.isArray(excludedRaw)
+      ? excludedRaw.map((item) => item.trim())
+      : [];
+
+    const supabaseRaw = config.supabase;
+    if (!supabaseRaw || typeof supabaseRaw !== 'object') {
+      return {
+        ok: false,
+        error:
+          'Missing required "supabase" object in .tursor/config.json (url, serviceRoleKey, storageBucket)',
+      };
+    }
+
+    const url = readNonEmptyString(
+      supabaseRaw.url ?? supabaseRaw.SUPABASE_URL,
+      'supabase.url',
+    );
+    if (typeof url === 'object') return { ok: false, error: url.error };
+
+    const serviceRoleKey = readNonEmptyString(
+      supabaseRaw.serviceRoleKey ?? supabaseRaw.SUPABASE_SERVICE_ROLE_KEY,
+      'supabase.serviceRoleKey',
+    );
+    if (typeof serviceRoleKey === 'object') {
+      return { ok: false, error: serviceRoleKey.error };
+    }
+
+    const storageBucket = readNonEmptyString(
+      supabaseRaw.storageBucket ?? supabaseRaw.SUPABASE_STORAGE_BUCKET,
+      'supabase.storageBucket',
+    );
+    if (typeof storageBucket === 'object') {
+      return { ok: false, error: storageBucket.error };
+    }
+
+    return {
+      ok: true,
+      excluded,
+      configPath,
+      supabase: { url, serviceRoleKey, storageBucket },
+    };
   }
 }

@@ -1,79 +1,121 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import type { WorkspaceSupabaseConfig } from '../context/workspace-config.types';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function formatStorageError(error: {
+  message: string;
+  originalError?: unknown;
+}): string {
+  const parts = [error.message];
+  const original = error.originalError;
+  if (original instanceof Error) {
+    parts.push(original.message);
+    const cause = original.cause;
+    if (cause instanceof Error && cause.message) {
+      parts.push(cause.message);
+    }
+  }
+  return parts.join(' — ');
+}
 
 @Injectable()
 export class SupabaseScreenshotService {
   private readonly logger = new Logger(SupabaseScreenshotService.name);
-  private client: SupabaseClient | null = null;
+  private readonly clientCache = new Map<string, SupabaseClient>();
 
-  constructor(private readonly configService: ConfigService) {}
-
-  isConfigured(): boolean {
-    return Boolean(this.url() && this.serviceRoleKey() && this.bucket());
+  isConfigured(config: WorkspaceSupabaseConfig): boolean {
+    return Boolean(
+      config.url?.trim() &&
+      config.serviceRoleKey?.trim() &&
+      config.storageBucket?.trim(),
+    );
   }
 
-  private url(): string | undefined {
-    const raw = this.configService.get<string>('SUPABASE_URL')?.trim();
-    return raw || undefined;
+  missingConfigMessage(): string {
+    return (
+      'Supabase screenshot storage is not configured in .tursor/config.json. ' +
+      'Add a required "supabase" object with url, serviceRoleKey, and storageBucket.'
+    );
   }
 
-  private serviceRoleKey(): string | undefined {
-    const raw = this.configService
-      .get<string>('SUPABASE_SERVICE_ROLE_KEY')
-      ?.trim();
-    return raw || undefined;
-  }
-
-  private bucket(): string | undefined {
-    const raw = this.configService
-      .get<string>('SUPABASE_STORAGE_BUCKET')
-      ?.trim();
-    return raw || undefined;
-  }
-
-  private getClient(): SupabaseClient {
-    if (this.client) {
-      return this.client;
+  private getClient(config: WorkspaceSupabaseConfig): SupabaseClient {
+    const url = config.url.trim();
+    const key = config.serviceRoleKey.trim();
+    const cacheKey = `${url}:${key.slice(0, 16)}`;
+    const cached = this.clientCache.get(cacheKey);
+    if (cached) {
+      return cached;
     }
-    const url = this.url();
-    const key = this.serviceRoleKey();
-    if (!url || !key) {
-      throw new Error('Supabase is not configured');
-    }
-    this.client = createClient(url, key, {
+
+    const client = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
+      global: {
+        fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+          fetch(input, {
+            ...init,
+            signal: init?.signal ?? AbortSignal.timeout(120_000),
+          }),
+      },
     });
-    return this.client;
+    this.clientCache.set(cacheKey, client);
+    return client;
   }
 
   /**
-   * Upload PNG to public bucket; returns public object URL.
+   * Upload screenshot JPEG to public bucket; returns public object URL.
    */
   async uploadPng(
     runId: string,
     stepId: string,
     buffer: Buffer,
+    supabase: WorkspaceSupabaseConfig,
   ): Promise<string> {
-    const bucket = this.bucket();
-    if (!bucket) {
-      throw new Error('SUPABASE_STORAGE_BUCKET is not set');
+    if (!this.isConfigured(supabase)) {
+      throw new Error(this.missingConfigMessage());
     }
 
+    const bucket = supabase.storageBucket.trim();
     const safeRun = runId.replace(/[^a-zA-Z0-9-_]/g, '');
     const safeStep = stepId.replace(/[^a-zA-Z0-9-_]/g, '_');
-    const objectPath = `runs/${safeRun}/${safeStep}.png`;
+    const objectPath = `runs/${safeRun}/${safeStep}.jpg`;
 
-    const client = this.getClient();
-    const { error } = await client.storage
-      .from(bucket)
-      .upload(objectPath, buffer, {
-        contentType: 'image/png',
-        upsert: true,
-      });
+    const client = this.getClient(supabase);
+    const body = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    const maxAttempts = 5;
+    let lastError: Error | undefined;
 
-    if (error) {
-      throw new Error(`Supabase upload failed: ${error.message}`);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const { error } = await client.storage
+        .from(bucket)
+        .upload(objectPath, body, {
+          contentType: 'image/jpeg',
+          upsert: true,
+        });
+
+      if (!error) {
+        lastError = undefined;
+        break;
+      }
+
+      const detail = formatStorageError(error);
+      lastError = new Error(`Supabase upload failed: ${detail}`);
+      this.logger.warn(
+        `Screenshot upload attempt ${attempt}/${maxAttempts} failed (${objectPath}, ${body.length} bytes): ${detail}`,
+      );
+
+      if (attempt < maxAttempts) {
+        await sleep(1000 * attempt);
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
     }
 
     const { data } = client.storage.from(bucket).getPublicUrl(objectPath);
@@ -82,7 +124,7 @@ export class SupabaseScreenshotService {
       throw new Error('Supabase public URL missing (is the bucket public?)');
     }
 
-    this.logger.debug(`Uploaded screenshot ${objectPath}`);
+    this.logger.debug(`Uploaded screenshot ${objectPath} → ${publicUrl}`);
     return publicUrl;
   }
 }

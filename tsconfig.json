@@ -22,7 +22,8 @@
     "noFallthroughCasesInSwitch": false,
     "allowJs": true,
     "checkJs": false,
-    "noEmit": true
+    "noEmit": true,
+    "types": ["node", "jest"]
   },
   "include": ["src/**/*", "test/**/*"],
   "exclude": ["node_modules", "dist", "bin"]

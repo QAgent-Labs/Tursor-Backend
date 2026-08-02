@@ -207,7 +207,8 @@ export class WebsocketGateway
         this.emitRunLog({
           category: 'context',
           level: 'warn',
-          message: 'Session config received with no workspace or frontend port.',
+          message:
+            'Session config received with no workspace or frontend port.',
         });
       }
       return;
@@ -387,7 +388,8 @@ export class WebsocketGateway
     this.emitRunLog({
       category: 'context',
       level: 'success',
-      message: 'Context ready — starting CDP demo flow when frontend port is set.',
+      message:
+        'Context ready — starting CDP demo flow when frontend port is set.',
     });
   }
 

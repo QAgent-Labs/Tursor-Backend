@@ -9,6 +9,13 @@ import {
 } from './cdp-step.types';
 import { ScreenshotStorageService } from './screenshot-storage.service';
 import { SupabaseScreenshotService } from './supabase-screenshot.service';
+import type { WorkspaceSupabaseConfig } from '../context/workspace-config.types';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 @Injectable()
 export class CdpRunnerService {
@@ -23,37 +30,34 @@ export class CdpRunnerService {
   async runDemoFlow(
     frontendPort: number,
     workspacePath: string | null,
+    supabase: WorkspaceSupabaseConfig,
     callbacks: CdpRunCallbacks,
   ): Promise<void> {
     const baseUrl = `http://127.0.0.1:${frontendPort}`;
     const steps = demoCdpSteps();
     const headless = this.configService.get<string>('CDP_HEADLESS') === 'true';
     const slowMo = Number(this.configService.get<string>('CDP_SLOW_MO') ?? 0);
+    const stepDelayMs = Number(
+      this.configService.get<string>('CDP_STEP_DELAY_MS') ?? 1000,
+    );
+
+    if (!this.supabaseScreenshots.isConfigured(supabase)) {
+      const message = this.supabaseScreenshots.missingConfigMessage();
+      callbacks.onLog('run', message);
+      throw new Error(message);
+    }
 
     const { runId, dir } =
       this.screenshotStorage.createRunDirectory(workspacePath);
     this.screenshotStorage.registerRunLocation(runId, dir);
-    const useSupabase = this.supabaseScreenshots.isConfigured();
 
     callbacks.onLog(
       'run',
-      `CDP run ${runId} started (headless=${headless}, slowMo=${slowMo}).`,
+      `CDP run ${runId} started (headless=${headless}, slowMo=${slowMo}, stepDelayMs=${stepDelayMs}).`,
     );
     callbacks.onLog('run', `Target frontend: ${baseUrl}`);
-    callbacks.onLog('run', `Screenshot directory: ${dir}`);
     callbacks.onLog('run', `Total demo steps: ${steps.length}`);
-
-    if (useSupabase) {
-      callbacks.onLog(
-        'run',
-        'Screenshot storage: Supabase (public URLs).',
-      );
-    } else {
-      callbacks.onLog(
-        'run',
-        'Screenshot storage: local filesystem (served by backend).',
-      );
-    }
+    callbacks.onLog('run', 'Screenshot storage: Supabase (public URLs).');
 
     let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
@@ -69,9 +73,13 @@ export class CdpRunnerService {
         `Chromium ready (viewport 1280×720, headless=${headless}).`,
       );
 
-      for (const step of steps) {
+      for (let i = 0; i < steps.length; i += 1) {
+        const step = steps[i];
         callbacks.onStep(step.id, step.label);
-        callbacks.onLog(step.id, `Step "${step.label}" — ${step.actions.length} action(s).`);
+        callbacks.onLog(
+          step.id,
+          `Step "${step.label}" — ${step.actions.length} action(s).`,
+        );
 
         for (const action of step.actions) {
           const actionDesc = describeAction(action, baseUrl);
@@ -83,21 +91,28 @@ export class CdpRunnerService {
         }
 
         callbacks.onLog(step.id, 'Capturing screenshot…');
-        const buffer = await page.screenshot({ type: 'png', fullPage: false });
-        let url: string;
-        if (useSupabase) {
-          callbacks.onLog(step.id, 'Uploading screenshot to Supabase…');
-          url = await this.supabaseScreenshots.uploadPng(
-            runId,
-            step.id,
-            buffer,
-          );
-        } else {
-          this.screenshotStorage.savePng(dir, step.id, buffer);
-          url = this.screenshotStorage.publicScreenshotUrl(runId, step.id);
-        }
+        const buffer = await page.screenshot({
+          type: 'jpeg',
+          quality: 85,
+          fullPage: false,
+        });
+        callbacks.onLog(step.id, 'Uploading screenshot to Supabase…');
+        const url = await this.supabaseScreenshots.uploadPng(
+          runId,
+          step.id,
+          buffer,
+          supabase,
+        );
         callbacks.onScreenshot(step.id, url);
-        callbacks.onLog(step.id, `Screenshot saved (${url}).`);
+        callbacks.onLog(step.id, `Screenshot uploaded (${url}).`);
+
+        if (i < steps.length - 1 && stepDelayMs > 0) {
+          callbacks.onLog(
+            step.id,
+            `Waiting ${stepDelayMs}ms before next step…`,
+          );
+          await sleep(stepDelayMs);
+        }
       }
 
       callbacks.onLog('run', 'Demo flow finished successfully.');
@@ -138,7 +153,9 @@ export class CdpRunnerService {
         return;
       }
       case 'click':
-        onDetail(`Clicking first matching selector from [${action.selectors.join(', ')}]…`);
+        onDetail(
+          `Clicking first matching selector from [${action.selectors.join(', ')}]…`,
+        );
         await this.clickFirstMatch(page, action.selectors);
         onDetail('Click action completed.');
         return;
