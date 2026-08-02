@@ -61,6 +61,10 @@ type RevalidateContextEvent = {
   type: 'revalidate_context';
 };
 
+type StartCdpEvent = {
+  type: 'start_cdp';
+};
+
 type UserMessageEvent = {
   type: 'user_message';
   id: string;
@@ -72,6 +76,7 @@ type InboundSocketEvent =
   | SessionConfigEvent
   | StartContextEvent
   | RevalidateContextEvent
+  | StartCdpEvent
   | UserMessageEvent;
 
 @WebSocketGateway({
@@ -224,6 +229,16 @@ export class WebsocketGateway
         });
       }
       void this.runOrchestrator.startContextPipeline();
+      return;
+    }
+
+    if (data?.type === 'start_cdp') {
+      this.emitRunLog({
+        category: 'cdp',
+        level: 'info',
+        message: 'Run screen requested CDP demo start.',
+      });
+      void this.runOrchestrator.startCdpRun();
       return;
     }
 

@@ -27,7 +27,7 @@ export class CdpRunnerService {
   ): Promise<void> {
     const baseUrl = `http://127.0.0.1:${frontendPort}`;
     const steps = demoCdpSteps();
-    const headless = this.configService.get<string>('CDP_HEADLESS') !== 'false';
+    const headless = this.configService.get<string>('CDP_HEADLESS') === 'true';
     const slowMo = Number(this.configService.get<string>('CDP_SLOW_MO') ?? 0);
 
     const { runId, dir } =

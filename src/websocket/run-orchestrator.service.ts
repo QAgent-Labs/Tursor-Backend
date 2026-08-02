@@ -4,11 +4,13 @@ import { ContextService } from '../context/context.service';
 import { CdpRunnerService } from '../cdp/cdp-runner.service';
 import { WorkspaceConfigValidator } from '../context/workspace-config.validator';
 import { WebsocketGateway } from './websocket.gateway';
+import type { CdpRunCallbacks } from '../cdp/cdp-step.types';
 
 @Injectable()
 export class RunOrchestratorService {
   private readonly logger = new Logger(RunOrchestratorService.name);
   private building = false;
+  private cdpRunning = false;
 
   constructor(
     private readonly contextService: ContextService,
@@ -34,13 +36,127 @@ export class RunOrchestratorService {
     return { ok: true };
   }
 
+  private cdpCallbacks(): CdpRunCallbacks {
+    return {
+      onStep: (stepId, label) => this.gateway.sendStepUpdate(stepId, label),
+      onLog: (stepId, message) =>
+        this.gateway.sendLog(stepId, message, 'cdp'),
+      onScreenshot: (stepId, url) => this.gateway.sendScreenshot(stepId, url),
+      onComplete: (status) => this.gateway.sendComplete(status),
+    };
+  }
+
+  private validateWorkspaceOrEmitError(
+    workspacePath: string,
+  ): { ok: true } | { ok: false } {
+    this.gateway.emitRunLog({
+      category: 'context',
+      level: 'info',
+      message: 'Validating local .tursor/config.json…',
+      meta: { workspacePath },
+    });
+
+    const local = this.validator.validate(workspacePath);
+    if (!local.ok) {
+      this.gateway.emitContextError('missing_tursor_config', local.error);
+      return { ok: false };
+    }
+
+    this.gateway.emitRunLog({
+      category: 'context',
+      level: 'success',
+      message: 'Local workspace config validation passed.',
+    });
+    return { ok: true };
+  }
+
+  /** Run Playwright demo steps against the session frontend port (Run screen entry). */
+  async startCdpRun(): Promise<void> {
+    if (this.cdpRunning) {
+      this.gateway.emitRunLog({
+        category: 'cdp',
+        level: 'warn',
+        message: 'CDP demo already running — wait for it to finish or click Refresh.',
+      });
+      return;
+    }
+
+    const workspacePath = this.contextService.getWorkspacePath();
+    if (!workspacePath) {
+      this.gateway.emitContextError(
+        'no_workspace',
+        'Workspace path is not set.',
+      );
+      return;
+    }
+
+    const frontendPort = this.contextService.getFrontendPort();
+    if (!frontendPort) {
+      this.gateway.emitContextError(
+        'no_frontend_port',
+        'Test frontend port is not set. Enter it on the connection screen.',
+      );
+      return;
+    }
+
+    this.cdpRunning = true;
+    const baseUrl = `http://127.0.0.1:${frontendPort}`;
+
+    this.gateway.emitRunLog({
+      category: 'cdp',
+      level: 'info',
+      message: `CDP run requested — targeting ${baseUrl}`,
+      meta: { frontendPort, baseUrl, workspacePath },
+    });
+
+    try {
+      const validated = this.validateWorkspaceOrEmitError(workspacePath);
+      if (!validated.ok) {
+        return;
+      }
+
+      this.contextService.markContextReady({
+        embeddingsDir: '',
+        filesIndexed: 0,
+        chunksIndexed: 0,
+        model: 'disabled',
+      });
+      this.gateway.emitContextReady();
+
+      this.gateway.emitRunLog({
+        category: 'cdp',
+        level: 'info',
+        message: `Launching browser and running demo steps on ${baseUrl}…`,
+        meta: { frontendPort, baseUrl },
+      });
+
+      await this.cdpRunner.runDemoFlow(
+        frontendPort,
+        workspacePath,
+        this.cdpCallbacks(),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`CDP run failed: ${message}`);
+      this.gateway.emitContextError('cdp_failed', message);
+    } finally {
+      this.cdpRunning = false;
+      this.gateway.emitRunLog({
+        category: 'cdp',
+        level: 'debug',
+        message: 'CDP run finished (cdpRunning flag cleared).',
+      });
+    }
+  }
+
   async startContextPipeline(): Promise<void> {
     if (this.building) {
       this.logger.log('Context build already in progress');
       this.gateway.emitRunLog({
         category: 'context',
         level: 'warn',
-        message: 'Context pipeline already in progress — skipping duplicate start.',
+        message:
+          'Context pipeline already in progress — skipping duplicate start.',
       });
       return;
     }
@@ -63,29 +179,11 @@ export class RunOrchestratorService {
     });
 
     try {
-      this.gateway.emitRunLog({
-        category: 'context',
-        level: 'info',
-        message: 'Validating local .tursor/config.json…',
-        meta: { workspacePath },
-      });
-
-      const local = this.validator.validate(workspacePath);
-      if (!local.ok) {
-        this.gateway.emitContextError(
-          'missing_tursor_config',
-          local.error,
-        );
+      const validated = this.validateWorkspaceOrEmitError(workspacePath);
+      if (!validated.ok) {
         return;
       }
 
-      this.gateway.emitRunLog({
-        category: 'context',
-        level: 'success',
-        message: 'Local workspace config validation passed.',
-      });
-
-      /* Tursor-AI embed disabled for now — skip remote validate/embed and go straight to CDP. */
       this.gateway.emitRunLog({
         category: 'context',
         level: 'info',
@@ -110,20 +208,7 @@ export class RunOrchestratorService {
 
       const frontendPort = this.contextService.getFrontendPort();
       if (frontendPort) {
-        this.gateway.emitRunLog({
-          category: 'cdp',
-          level: 'info',
-          message: `Starting CDP demo flow against frontend port ${frontendPort}.`,
-          meta: { frontendPort, baseUrl: `http://127.0.0.1:${frontendPort}` },
-        });
-
-        await this.cdpRunner.runDemoFlow(frontendPort, workspacePath, {
-          onStep: (stepId, label) => this.gateway.sendStepUpdate(stepId, label),
-          onLog: (stepId, message) => this.gateway.sendLog(stepId, message, 'cdp'),
-          onScreenshot: (stepId, url) =>
-            this.gateway.sendScreenshot(stepId, url),
-          onComplete: (status) => this.gateway.sendComplete(status),
-        });
+        await this.startCdpRun();
       } else {
         this.gateway.emitRunLog({
           category: 'cdp',
