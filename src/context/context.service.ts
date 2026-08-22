@@ -56,6 +56,10 @@ export class ContextService {
     return this.context?.frontendPort ?? null;
   }
 
+  isContextReady(): boolean {
+    return this.context?.contextReady ?? false;
+  }
+
   markContextReady(meta: {
     embeddingsDir: string;
     filesIndexed: number;

@@ -7,6 +7,11 @@ export type TursorAiEmbedResult = {
   files_indexed: number;
   chunks_indexed: number;
   model: string;
+  files_added?: number;
+  files_updated?: number;
+  files_removed?: number;
+  files_unchanged?: number;
+  incremental?: boolean;
 };
 
 @Injectable()

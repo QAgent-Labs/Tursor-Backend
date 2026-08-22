@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
-// import { TursorAiClient } from '../tursor-ai/tursor-ai.client';
+import { TursorAiClient } from '../tursor-ai/tursor-ai.client';
+import { TursorAiRuntimeService } from '../tursor-ai/tursor-ai-runtime.service';
 import { ContextService } from '../context/context.service';
 import { CdpRunnerService } from '../cdp/cdp-runner.service';
 import { WorkspaceConfigValidator } from '../context/workspace-config.validator';
@@ -12,11 +13,14 @@ export class RunOrchestratorService {
   private readonly logger = new Logger(RunOrchestratorService.name);
   private building = false;
   private cdpRunning = false;
+  private embedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingEmbedPath: string | null = null;
 
   constructor(
     private readonly contextService: ContextService,
     private readonly validator: WorkspaceConfigValidator,
-    // private readonly tursorAi: TursorAiClient,
+    private readonly tursorAiRuntime: TursorAiRuntimeService,
+    private readonly tursorAi: TursorAiClient,
     private readonly cdpRunner: CdpRunnerService,
     @Inject(forwardRef(() => WebsocketGateway))
     private readonly gateway: WebsocketGateway,
@@ -35,6 +39,45 @@ export class RunOrchestratorService {
       return { ok: false, error: result.error };
     }
     return { ok: true };
+  }
+
+  scheduleIncrementalEmbed(changedPath?: string): void {
+    const workspacePath = this.contextService.getWorkspacePath();
+    if (!workspacePath) {
+      return;
+    }
+
+    if (changedPath) {
+      const normalized = changedPath.replace(/\\/g, '/');
+      const workspaceRoot = workspacePath.replace(/\\/g, '/');
+      if (
+        !normalized.startsWith(`${workspaceRoot}/`) &&
+        normalized !== workspaceRoot
+      ) {
+        return;
+      }
+      if (
+        normalized.includes('/.tursor/embeddings/') ||
+        normalized.includes('/.tursor/run-screenshots/')
+      ) {
+        return;
+      }
+      this.pendingEmbedPath = changedPath;
+    }
+
+    if (this.embedDebounceTimer) {
+      clearTimeout(this.embedDebounceTimer);
+    }
+
+    this.embedDebounceTimer = setTimeout(() => {
+      this.embedDebounceTimer = null;
+      const pathHint = this.pendingEmbedPath;
+      this.pendingEmbedPath = null;
+      void this.runEmbedPipeline({
+        trigger: 'file_change',
+        changedPath: pathHint ?? undefined,
+      });
+    }, 1500);
   }
 
   private cdpCallbacks(): CdpRunCallbacks {
@@ -71,7 +114,134 @@ export class RunOrchestratorService {
     return { ok: true, supabase: local.supabase };
   }
 
-  /** Run Playwright demo steps against the session frontend port (Run screen entry). */
+  private async ensureTursorAiReady(): Promise<boolean> {
+    const ready = await this.tursorAiRuntime.refresh();
+    if (ready) {
+      return true;
+    }
+
+    this.gateway.emitContextError(
+      'tursor_ai_unreachable',
+      'Tursor-AI is not reachable. Run `tursorAI start` or complete Tursor install.',
+    );
+    return false;
+  }
+
+  private async runEmbedPipeline(options?: {
+    trigger?: 'initial' | 'file_change' | 'manual';
+    changedPath?: string;
+  }): Promise<boolean> {
+    if (this.building) {
+      this.gateway.emitRunLog({
+        category: 'context',
+        level: 'warn',
+        message: 'Context pipeline already in progress — skipping duplicate run.',
+      });
+      return false;
+    }
+
+    const workspacePath = this.contextService.getWorkspacePath();
+    if (!workspacePath) {
+      this.gateway.emitContextError(
+        'no_workspace',
+        'Workspace path is not set.',
+      );
+      return false;
+    }
+
+    this.building = true;
+    this.contextService.resetContextReady();
+    this.gateway.emitContextBuilding();
+
+    const trigger = options?.trigger ?? 'manual';
+    this.gateway.emitRunLog({
+      category: 'context',
+      level: 'info',
+      message:
+        trigger === 'file_change'
+          ? `Updating code context after file change${options?.changedPath ? `: ${options.changedPath}` : ''}.`
+          : `Building code context for workspace: ${workspacePath}`,
+      meta: { workspacePath, trigger, changedPath: options?.changedPath ?? null },
+    });
+
+    try {
+      const validated = this.validateWorkspaceOrEmitError(workspacePath);
+      if (!validated.ok) {
+        return false;
+      }
+
+      if (!(await this.ensureTursorAiReady())) {
+        return false;
+      }
+
+      await this.tursorAi.ensureReady();
+
+      this.gateway.emitRunLog({
+        category: 'context',
+        level: 'info',
+        message: 'Validating workspace with Tursor-AI…',
+        meta: { workspacePath },
+      });
+
+      const aiValidate = await this.tursorAi.validate(workspacePath);
+      if (!aiValidate.ok) {
+        this.gateway.emitContextError(
+          'tursor_ai_validate',
+          aiValidate.error ?? 'Tursor-AI validation failed.',
+        );
+        return false;
+      }
+
+      this.gateway.emitRunLog({
+        category: 'context',
+        level: 'info',
+        message: 'Creating workspace embeddings (incremental when possible)…',
+        meta: { workspacePath },
+      });
+
+      const embedResult = await this.tursorAi.embed(workspacePath);
+
+      this.contextService.markContextReady({
+        embeddingsDir: embedResult.embeddings_dir,
+        filesIndexed: embedResult.files_indexed,
+        chunksIndexed: embedResult.chunks_indexed,
+        model: embedResult.model,
+      });
+
+      this.gateway.emitRunLog({
+        category: 'context',
+        level: 'success',
+        message: `Code context ready — ${embedResult.files_indexed} files, ${embedResult.chunks_indexed} chunks (${embedResult.model}).`,
+        meta: {
+          filesIndexed: embedResult.files_indexed,
+          chunksIndexed: embedResult.chunks_indexed,
+          filesAdded: embedResult.files_added,
+          filesUpdated: embedResult.files_updated,
+          filesRemoved: embedResult.files_removed,
+          filesUnchanged: embedResult.files_unchanged,
+          incremental: embedResult.incremental,
+          model: embedResult.model,
+        },
+      });
+
+      this.gateway.emitContextReady();
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Context pipeline failed: ${message}`);
+      this.gateway.emitContextError('embed_failed', message);
+      return false;
+    } finally {
+      this.building = false;
+      this.gateway.emitRunLog({
+        category: 'context',
+        level: 'debug',
+        message: 'Context pipeline finished (building flag cleared).',
+      });
+    }
+  }
+
+  /** Run Playwright demo steps against the session frontend port. */
   async startCdpRun(): Promise<void> {
     if (this.cdpRunning) {
       this.gateway.emitRunLog({
@@ -88,6 +258,14 @@ export class RunOrchestratorService {
       this.gateway.emitContextError(
         'no_workspace',
         'Workspace path is not set.',
+      );
+      return;
+    }
+
+    if (!this.contextService.isContextReady()) {
+      this.gateway.emitContextError(
+        'context_not_ready',
+        'Code context is still being created. Wait for embeddings to finish.',
       );
       return;
     }
@@ -117,14 +295,6 @@ export class RunOrchestratorService {
         return;
       }
 
-      this.contextService.markContextReady({
-        embeddingsDir: '',
-        filesIndexed: 0,
-        chunksIndexed: 0,
-        model: 'disabled',
-      });
-      this.gateway.emitContextReady();
-
       this.gateway.emitRunLog({
         category: 'cdp',
         level: 'info',
@@ -153,84 +323,6 @@ export class RunOrchestratorService {
   }
 
   async startContextPipeline(): Promise<void> {
-    if (this.building) {
-      this.logger.log('Context build already in progress');
-      this.gateway.emitRunLog({
-        category: 'context',
-        level: 'warn',
-        message:
-          'Context pipeline already in progress — skipping duplicate start.',
-      });
-      return;
-    }
-
-    const workspacePath = this.contextService.getWorkspacePath();
-    if (!workspacePath) {
-      this.gateway.emitContextError(
-        'no_workspace',
-        'Workspace path is not set.',
-      );
-      return;
-    }
-
-    this.building = true;
-    this.gateway.emitRunLog({
-      category: 'context',
-      level: 'info',
-      message: `Starting context pipeline for workspace: ${workspacePath}`,
-      meta: { workspacePath },
-    });
-
-    try {
-      const validated = this.validateWorkspaceOrEmitError(workspacePath);
-      if (!validated.ok) {
-        return;
-      }
-
-      this.gateway.emitRunLog({
-        category: 'context',
-        level: 'info',
-        message: 'Tursor-AI embed disabled — skipping remote validate/embed.',
-      });
-
-      this.contextService.markContextReady({
-        embeddingsDir: '',
-        filesIndexed: 0,
-        chunksIndexed: 0,
-        model: 'disabled',
-      });
-
-      this.gateway.emitRunLog({
-        category: 'context',
-        level: 'info',
-        message: 'Context marked ready (embeddings disabled).',
-        meta: { model: 'disabled', filesIndexed: 0, chunksIndexed: 0 },
-      });
-
-      this.gateway.emitContextReady();
-
-      const frontendPort = this.contextService.getFrontendPort();
-      if (frontendPort) {
-        await this.startCdpRun();
-      } else {
-        this.gateway.emitRunLog({
-          category: 'cdp',
-          level: 'warn',
-          message:
-            'No frontend port configured — CDP demo flow skipped. Set frontend port on the connection screen.',
-        });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Context pipeline failed: ${message}`);
-      this.gateway.emitContextError('embed_failed', message);
-    } finally {
-      this.building = false;
-      this.gateway.emitRunLog({
-        category: 'context',
-        level: 'debug',
-        message: 'Context pipeline finished (building flag cleared).',
-      });
-    }
+    await this.runEmbedPipeline({ trigger: 'initial' });
   }
 }

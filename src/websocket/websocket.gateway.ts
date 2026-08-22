@@ -383,13 +383,21 @@ export class WebsocketGateway
     });
   }
 
+  emitContextBuilding() {
+    this.emit({ type: 'context_building' });
+    this.emitRunLog({
+      category: 'context',
+      level: 'info',
+      message: 'Code context is being created — please wait…',
+    });
+  }
+
   emitContextReady() {
     this.emit({ type: 'context_ready' });
     this.emitRunLog({
       category: 'context',
       level: 'success',
-      message:
-        'Context ready — starting CDP demo flow when frontend port is set.',
+      message: 'Code context ready — you can start the test run.',
     });
   }
 
