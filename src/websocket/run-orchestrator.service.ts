@@ -115,14 +115,28 @@ export class RunOrchestratorService {
   }
 
   private async ensureTursorAiReady(): Promise<boolean> {
-    const ready = await this.tursorAiRuntime.refresh();
-    if (ready) {
+    if (await this.tursorAiRuntime.refresh()) {
+      return true;
+    }
+
+    this.gateway.emitRunLog({
+      category: 'context',
+      level: 'info',
+      message: 'Tursor-AI is not running — starting via `tursorAI start`…',
+    });
+
+    if (await this.tursorAiRuntime.tryStartViaCli()) {
+      this.gateway.emitRunLog({
+        category: 'context',
+        level: 'success',
+        message: 'Tursor-AI started and is reachable.',
+      });
       return true;
     }
 
     this.gateway.emitContextError(
       'tursor_ai_unreachable',
-      'Tursor-AI is not reachable. Run `tursorAI start` or complete Tursor install.',
+      'Tursor-AI is not reachable. Run `tursorAI start` or re-run Tursor install (Python 3.10+ required).',
     );
     return false;
   }

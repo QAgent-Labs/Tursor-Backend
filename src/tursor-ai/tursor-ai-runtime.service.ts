@@ -74,6 +74,33 @@ export class TursorAiRuntimeService implements OnModuleInit {
     return false;
   }
 
+  /** Best-effort start via local `tursorAI` CLI, then poll /health. */
+  async tryStartViaCli(): Promise<boolean> {
+    const cli = this.tursorAiCliPath();
+    try {
+      await execFileAsync(cli, ['start'], {
+        env: this.cliEnv(),
+        timeout: 120_000,
+        maxBuffer: 8192,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`tursorAI start failed: ${msg}`);
+    }
+
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      if (await this.refresh()) {
+        return true;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, 2000);
+      });
+    }
+
+    return false;
+  }
+
   private tursorAiCliPath(): string {
     const home = os.homedir();
     const name = process.platform === 'win32' ? 'tursorAI.cmd' : 'tursorAI';
