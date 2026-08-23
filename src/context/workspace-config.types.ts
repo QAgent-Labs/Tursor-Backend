@@ -5,7 +5,16 @@ export type WorkspaceSupabaseConfig = {
   storageBucket: string;
 };
 
+/** LLM settings for chat / test generation (from workspace config). */
+export type WorkspaceAiConfig = {
+  generationModel: string;
+  apiKey: string;
+};
+
 export type WorkspaceTursorConfig = {
+  project?: { name?: string };
+  include?: { patterns?: string[] };
   excluded?: string[];
   supabase: WorkspaceSupabaseConfig;
+  ai?: WorkspaceAiConfig;
 };

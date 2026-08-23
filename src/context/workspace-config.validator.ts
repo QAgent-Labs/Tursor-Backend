@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type {
+  WorkspaceAiConfig,
   WorkspaceSupabaseConfig,
   WorkspaceTursorConfig,
 } from './workspace-config.types';
@@ -12,6 +13,7 @@ export type WorkspaceConfigValidation =
       excluded: string[];
       configPath: string;
       supabase: WorkspaceSupabaseConfig;
+      ai: WorkspaceAiConfig | null;
     }
   | { ok: false; error: string };
 
@@ -109,11 +111,32 @@ export class WorkspaceConfigValidator {
       return { ok: false, error: storageBucket.error };
     }
 
+    let ai: WorkspaceAiConfig | null = null;
+    const aiRaw = config.ai;
+    if (aiRaw !== undefined) {
+      if (!aiRaw || typeof aiRaw !== 'object') {
+        return { ok: false, error: '"ai" must be an object' };
+      }
+      const generationModel = readNonEmptyString(
+        aiRaw.generationModel,
+        'ai.generationModel',
+      );
+      if (typeof generationModel === 'object') {
+        return { ok: false, error: generationModel.error };
+      }
+      const apiKey = readNonEmptyString(aiRaw.apiKey, 'ai.apiKey');
+      if (typeof apiKey === 'object') {
+        return { ok: false, error: apiKey.error };
+      }
+      ai = { generationModel, apiKey };
+    }
+
     return {
       ok: true,
       excluded,
       configPath,
       supabase: { url, serviceRoleKey, storageBucket },
+      ai,
     };
   }
 }

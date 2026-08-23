@@ -28,6 +28,8 @@ export class ContextController {
       ok: true,
       configPath: result.configPath,
       excluded: result.excluded,
+      aiConfigured: result.ai !== null,
+      generationModel: result.ai?.generationModel ?? null,
     };
   }
 }
