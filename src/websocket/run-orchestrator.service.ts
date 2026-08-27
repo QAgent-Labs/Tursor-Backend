@@ -319,7 +319,7 @@ export class RunOrchestratorService {
       await this.cdpRunner.runDemoFlow(
         frontendPort,
         workspacePath,
-        validated.supabase,
+        validated.supabase.bucket,
         this.cdpCallbacks(),
       );
     } catch (err) {
@@ -338,5 +338,70 @@ export class RunOrchestratorService {
 
   async startContextPipeline(): Promise<void> {
     await this.runEmbedPipeline({ trigger: 'initial' });
+  }
+
+  /** REST bootstrap for standalone clients (e.g. Tursor-Chat-Sample). */
+  async bootstrapWorkspace(workspacePath: string): Promise<
+    | {
+        ok: true;
+        workspacePath: string;
+        contextReady: true;
+        filesIndexed: number;
+        chunksIndexed: number;
+        model: string;
+      }
+    | { ok: false; error: string }
+  > {
+    const path = workspacePath.trim();
+    if (!path) {
+      return { ok: false, error: 'workspacePath is required' };
+    }
+
+    const validated = this.validator.validate(path);
+    if (!validated.ok) {
+      return { ok: false, error: validated.error };
+    }
+
+    this.contextService.setWorkspaceContext(path);
+
+    if (!(await this.ensureTursorAiReady())) {
+      return {
+        ok: false,
+        error:
+          'Tursor-AI is not reachable. Run `tursorAI start` or re-run install.',
+      };
+    }
+
+    try {
+      await this.tursorAi.ensureReady();
+      const aiValidate = await this.tursorAi.validate(path);
+      if (!aiValidate.ok) {
+        return {
+          ok: false,
+          error: aiValidate.error ?? 'Tursor-AI validation failed.',
+        };
+      }
+
+      const embedResult = await this.tursorAi.embed(path);
+      this.contextService.markContextReady({
+        embeddingsDir: embedResult.embeddings_dir,
+        filesIndexed: embedResult.files_indexed,
+        chunksIndexed: embedResult.chunks_indexed,
+        model: embedResult.model,
+      });
+
+      return {
+        ok: true,
+        workspacePath: path,
+        contextReady: true,
+        filesIndexed: embedResult.files_indexed,
+        chunksIndexed: embedResult.chunks_indexed,
+        model: embedResult.model,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`REST bootstrap failed: ${message}`);
+      return { ok: false, error: message };
+    }
   }
 }

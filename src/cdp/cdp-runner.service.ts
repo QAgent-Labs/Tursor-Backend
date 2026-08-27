@@ -9,7 +9,7 @@ import {
 } from './cdp-step.types';
 import { ScreenshotStorageService } from './screenshot-storage.service';
 import { SupabaseScreenshotService } from './supabase-screenshot.service';
-import type { WorkspaceSupabaseConfig } from '../context/workspace-config.types';
+import type { WorkspaceSupabaseBucketConfig } from '../context/workspace-config.types';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -30,7 +30,7 @@ export class CdpRunnerService {
   async runDemoFlow(
     frontendPort: number,
     workspacePath: string | null,
-    supabase: WorkspaceSupabaseConfig,
+    bucketConfig: WorkspaceSupabaseBucketConfig,
     callbacks: CdpRunCallbacks,
   ): Promise<void> {
     const baseUrl = `http://127.0.0.1:${frontendPort}`;
@@ -41,7 +41,7 @@ export class CdpRunnerService {
       this.configService.get<string>('CDP_STEP_DELAY_MS') ?? 1000,
     );
 
-    if (!this.supabaseScreenshots.isConfigured(supabase)) {
+    if (!this.supabaseScreenshots.isConfigured(bucketConfig)) {
       const message = this.supabaseScreenshots.missingConfigMessage();
       callbacks.onLog('run', message);
       throw new Error(message);
@@ -101,7 +101,7 @@ export class CdpRunnerService {
           runId,
           step.id,
           buffer,
-          supabase,
+          bucketConfig,
         );
         callbacks.onScreenshot(step.id, url);
         callbacks.onLog(step.id, `Screenshot uploaded (${url}).`);

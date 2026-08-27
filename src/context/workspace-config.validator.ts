@@ -3,8 +3,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type {
   WorkspaceAiConfig,
+  WorkspaceSupabaseBucketConfig,
   WorkspaceSupabaseConfig,
-  WorkspaceTursorConfig,
+  WorkspaceSupabaseDatabaseConfig,
 } from './workspace-config.types';
 
 export type WorkspaceConfigValidation =
@@ -27,6 +28,133 @@ function readNonEmptyString(
     };
   }
   return value.trim();
+}
+
+function parseSupabaseSection(
+  supabaseRaw: Record<string, unknown>,
+):
+  | { ok: true; supabase: WorkspaceSupabaseConfig }
+  | { ok: false; error: string } {
+  const bucketRaw = supabaseRaw.bucket;
+  const databaseRaw = supabaseRaw.database;
+
+  if (
+    bucketRaw &&
+    typeof bucketRaw === 'object' &&
+    databaseRaw &&
+    typeof databaseRaw === 'object'
+  ) {
+    const bucketObj = bucketRaw as Record<string, unknown>;
+    const databaseObj = databaseRaw as Record<string, unknown>;
+
+    const bucketUrl = readNonEmptyString(
+      bucketObj.url ?? supabaseRaw.url ?? supabaseRaw.SUPABASE_URL,
+      'supabase.bucket.url',
+    );
+    if (typeof bucketUrl === 'object') {
+      return { ok: false, error: bucketUrl.error };
+    }
+
+    const bucketKey = readNonEmptyString(
+      bucketObj.serviceRoleKey ??
+        supabaseRaw.serviceRoleKey ??
+        supabaseRaw.SUPABASE_SERVICE_ROLE_KEY,
+      'supabase.bucket.serviceRoleKey',
+    );
+    if (typeof bucketKey === 'object') {
+      return { ok: false, error: bucketKey.error };
+    }
+
+    const bucketName = readNonEmptyString(
+      bucketObj.name ??
+        bucketObj.storageBucket ??
+        supabaseRaw.storageBucket ??
+        supabaseRaw.SUPABASE_STORAGE_BUCKET,
+      'supabase.bucket.name',
+    );
+    if (typeof bucketName === 'object') {
+      return { ok: false, error: bucketName.error };
+    }
+
+    const databaseUrl = readNonEmptyString(
+      databaseObj.url ?? supabaseRaw.url ?? supabaseRaw.SUPABASE_URL,
+      'supabase.database.url',
+    );
+    if (typeof databaseUrl === 'object') {
+      return { ok: false, error: databaseUrl.error };
+    }
+
+    const databaseKey = readNonEmptyString(
+      databaseObj.serviceRoleKey ??
+        supabaseRaw.serviceRoleKey ??
+        supabaseRaw.SUPABASE_SERVICE_ROLE_KEY,
+      'supabase.database.serviceRoleKey',
+    );
+    if (typeof databaseKey === 'object') {
+      return { ok: false, error: databaseKey.error };
+    }
+
+    const schemaRaw = databaseObj.schema;
+    const schema =
+      typeof schemaRaw === 'string' && schemaRaw.trim()
+        ? schemaRaw.trim()
+        : 'public';
+
+    const bucket: WorkspaceSupabaseBucketConfig = {
+      url: bucketUrl,
+      serviceRoleKey: bucketKey,
+      name: bucketName,
+    };
+    const database: WorkspaceSupabaseDatabaseConfig = {
+      url: databaseUrl,
+      serviceRoleKey: databaseKey,
+      schema,
+    };
+
+    return { ok: true, supabase: { bucket, database } };
+  }
+
+  const legacyUrl = readNonEmptyString(
+    supabaseRaw.url ?? supabaseRaw.SUPABASE_URL,
+    'supabase.url',
+  );
+  if (typeof legacyUrl === 'object') {
+    return { ok: false, error: legacyUrl.error };
+  }
+
+  const legacyKey = readNonEmptyString(
+    supabaseRaw.serviceRoleKey ?? supabaseRaw.SUPABASE_SERVICE_ROLE_KEY,
+    'supabase.serviceRoleKey',
+  );
+  if (typeof legacyKey === 'object') {
+    return { ok: false, error: legacyKey.error };
+  }
+
+  const legacyBucket = readNonEmptyString(
+    supabaseRaw.storageBucket ?? supabaseRaw.SUPABASE_STORAGE_BUCKET,
+    'supabase.storageBucket',
+  );
+  if (typeof legacyBucket === 'object') {
+    return {
+      ok: false,
+      error:
+        'Missing "supabase.bucket" and "supabase.database" objects. ' +
+        'Use nested config or legacy flat keys (url, serviceRoleKey, storageBucket).',
+    };
+  }
+
+  const bucket: WorkspaceSupabaseBucketConfig = {
+    url: legacyUrl,
+    serviceRoleKey: legacyKey,
+    name: legacyBucket,
+  };
+  const database: WorkspaceSupabaseDatabaseConfig = {
+    url: legacyUrl,
+    serviceRoleKey: legacyKey,
+    schema: 'public',
+  };
+
+  return { ok: true, supabase: { bucket, database } };
 }
 
 @Injectable()
@@ -56,9 +184,7 @@ export class WorkspaceConfigValidator {
       return { ok: false, error: `${configPath} must be a JSON object` };
     }
 
-    const config = raw as Partial<WorkspaceTursorConfig> & {
-      supabase?: Record<string, unknown>;
-    };
+    const config = raw as Record<string, unknown>;
 
     const excludedRaw = config.excluded;
     if (excludedRaw === undefined) {
@@ -85,30 +211,16 @@ export class WorkspaceConfigValidator {
       return {
         ok: false,
         error:
-          'Missing required "supabase" object in .tursor/config.json (url, serviceRoleKey, storageBucket)',
+          'Missing required "supabase" object in .tursor/config.json ' +
+          '(bucket + database nested objects)',
       };
     }
 
-    const url = readNonEmptyString(
-      supabaseRaw.url ?? supabaseRaw.SUPABASE_URL,
-      'supabase.url',
+    const supabaseParsed = parseSupabaseSection(
+      supabaseRaw as Record<string, unknown>,
     );
-    if (typeof url === 'object') return { ok: false, error: url.error };
-
-    const serviceRoleKey = readNonEmptyString(
-      supabaseRaw.serviceRoleKey ?? supabaseRaw.SUPABASE_SERVICE_ROLE_KEY,
-      'supabase.serviceRoleKey',
-    );
-    if (typeof serviceRoleKey === 'object') {
-      return { ok: false, error: serviceRoleKey.error };
-    }
-
-    const storageBucket = readNonEmptyString(
-      supabaseRaw.storageBucket ?? supabaseRaw.SUPABASE_STORAGE_BUCKET,
-      'supabase.storageBucket',
-    );
-    if (typeof storageBucket === 'object') {
-      return { ok: false, error: storageBucket.error };
+    if (!supabaseParsed.ok) {
+      return { ok: false, error: supabaseParsed.error };
     }
 
     let ai: WorkspaceAiConfig | null = null;
@@ -117,14 +229,15 @@ export class WorkspaceConfigValidator {
       if (!aiRaw || typeof aiRaw !== 'object') {
         return { ok: false, error: '"ai" must be an object' };
       }
+      const aiObj = aiRaw as Record<string, unknown>;
       const generationModel = readNonEmptyString(
-        aiRaw.generationModel,
+        aiObj.generationModel,
         'ai.generationModel',
       );
       if (typeof generationModel === 'object') {
         return { ok: false, error: generationModel.error };
       }
-      const apiKey = readNonEmptyString(aiRaw.apiKey, 'ai.apiKey');
+      const apiKey = readNonEmptyString(aiObj.apiKey, 'ai.apiKey');
       if (typeof apiKey === 'object') {
         return { ok: false, error: apiKey.error };
       }
@@ -135,7 +248,7 @@ export class WorkspaceConfigValidator {
       ok: true,
       excluded,
       configPath,
-      supabase: { url, serviceRoleKey, storageBucket },
+      supabase: supabaseParsed.supabase,
       ai,
     };
   }

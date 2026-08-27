@@ -41,6 +41,10 @@ export class TursorAiRuntimeService implements OnModuleInit {
     return raw.replace(/\/$/, '');
   }
 
+  isReachable(): boolean {
+    return this.resolvedOrigin !== null;
+  }
+
   async refresh(): Promise<boolean> {
     const fromCli = await this.probeViaCli();
     if (fromCli) {

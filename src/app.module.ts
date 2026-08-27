@@ -6,6 +6,7 @@ import { SessionModule } from './session/session.module';
 import { TestModule } from './test/test.module';
 import { WebsocketModule } from './websocket/websocket.module';
 import { ContextModule } from './context/context.module';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ContextModule } from './context/context.module';
     WebsocketModule,
     ContextModule,
     CdpModule,
+    ChatModule,
   ],
   controllers: [],
   providers: [],

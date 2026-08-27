@@ -14,6 +14,41 @@ export type TursorAiEmbedResult = {
   incremental?: boolean;
 };
 
+export type TursorAiRagChunk = {
+  path: string;
+  content: string;
+  start_line: number;
+  end_line: number;
+  score: number;
+};
+
+export type TursorAiChatRequest = {
+  workspace_path: string;
+  message: string;
+  generation_model: string;
+  api_key: string;
+  mode?: 'chat' | 'intro' | 'generate_test';
+  conversation_state?: string;
+  conversation_summary?: string | null;
+  recent_messages?: Array<{ role: string; content: string }>;
+  approved_test_flow?: Array<{ step: number; action: string }> | null;
+  rag_query?: string | null;
+  rag_top_k?: number;
+};
+
+export type TursorAiChatResult = {
+  ok: boolean;
+  type: string;
+  content?: string;
+  status?: string;
+  testFlow?: Array<{ step: number; action: string }>;
+  language?: string;
+  framework?: string;
+  testName?: string;
+  code?: string;
+  retrieved_chunk_count?: number;
+};
+
 @Injectable()
 export class TursorAiClient {
   private readonly logger = new Logger(TursorAiClient.name);
@@ -73,5 +108,52 @@ export class TursorAiClient {
     }
 
     return (await res.json()) as TursorAiEmbedResult;
+  }
+
+  async ragSearch(
+    directoryPath: string,
+    query: string,
+    topK = 8,
+  ): Promise<TursorAiRagChunk[]> {
+    const url = `${this.baseUrl()}/v1/rag/search`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        directory_path: directoryPath,
+        query,
+        top_k: topK,
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(
+        `Tursor-AI rag/search failed HTTP ${res.status}: ${detail.slice(0, 500)}`,
+      );
+    }
+
+    const body = (await res.json()) as { chunks?: TursorAiRagChunk[] };
+    return body.chunks ?? [];
+  }
+
+  async chatCompletion(
+    payload: TursorAiChatRequest,
+  ): Promise<TursorAiChatResult> {
+    const url = `${this.baseUrl()}/v1/chat/completion`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(
+        `Tursor-AI chat/completion failed HTTP ${res.status}: ${detail.slice(0, 500)}`,
+      );
+    }
+
+    return (await res.json()) as TursorAiChatResult;
   }
 }

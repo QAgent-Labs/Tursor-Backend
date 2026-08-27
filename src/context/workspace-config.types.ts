@@ -1,8 +1,21 @@
-/** Supabase Storage settings (maps to SUPABASE_* backend env vars). */
-export type WorkspaceSupabaseConfig = {
+/** Supabase Storage bucket settings (CDP run screenshots). */
+export type WorkspaceSupabaseBucketConfig = {
   url: string;
   serviceRoleKey: string;
-  storageBucket: string;
+  name: string;
+};
+
+/** Supabase Postgres settings (chat conversation persistence). */
+export type WorkspaceSupabaseDatabaseConfig = {
+  url: string;
+  serviceRoleKey: string;
+  schema: string;
+};
+
+/** Supabase settings from workspace `.tursor/config.json`. */
+export type WorkspaceSupabaseConfig = {
+  bucket: WorkspaceSupabaseBucketConfig;
+  database: WorkspaceSupabaseDatabaseConfig;
 };
 
 /** LLM settings for chat / test generation (from workspace config). */

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { WorkspaceSupabaseConfig } from '../context/workspace-config.types';
+import type { WorkspaceSupabaseBucketConfig } from '../context/workspace-config.types';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -29,22 +29,22 @@ export class SupabaseScreenshotService {
   private readonly logger = new Logger(SupabaseScreenshotService.name);
   private readonly clientCache = new Map<string, SupabaseClient>();
 
-  isConfigured(config: WorkspaceSupabaseConfig): boolean {
+  isConfigured(config: WorkspaceSupabaseBucketConfig): boolean {
     return Boolean(
       config.url?.trim() &&
       config.serviceRoleKey?.trim() &&
-      config.storageBucket?.trim(),
+      config.name?.trim(),
     );
   }
 
   missingConfigMessage(): string {
     return (
       'Supabase screenshot storage is not configured in .tursor/config.json. ' +
-      'Add a required "supabase" object with url, serviceRoleKey, and storageBucket.'
+      'Add supabase.bucket with url, serviceRoleKey, and name.'
     );
   }
 
-  private getClient(config: WorkspaceSupabaseConfig): SupabaseClient {
+  private getClient(config: WorkspaceSupabaseBucketConfig): SupabaseClient {
     const url = config.url.trim();
     const key = config.serviceRoleKey.trim();
     const cacheKey = `${url}:${key.slice(0, 16)}`;
@@ -74,18 +74,18 @@ export class SupabaseScreenshotService {
     runId: string,
     stepId: string,
     buffer: Buffer,
-    supabase: WorkspaceSupabaseConfig,
+    bucketConfig: WorkspaceSupabaseBucketConfig,
   ): Promise<string> {
-    if (!this.isConfigured(supabase)) {
+    if (!this.isConfigured(bucketConfig)) {
       throw new Error(this.missingConfigMessage());
     }
 
-    const bucket = supabase.storageBucket.trim();
+    const bucket = bucketConfig.name.trim();
     const safeRun = runId.replace(/[^a-zA-Z0-9-_]/g, '');
     const safeStep = stepId.replace(/[^a-zA-Z0-9-_]/g, '_');
     const objectPath = `runs/${safeRun}/${safeStep}.jpg`;
 
-    const client = this.getClient(supabase);
+    const client = this.getClient(bucketConfig);
     const body = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
     const maxAttempts = 5;
     let lastError: Error | undefined;
