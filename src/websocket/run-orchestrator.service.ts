@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
+import { createLogger } from '../lib/logger';
 import { TursorAiClient } from '../tursor-ai/tursor-ai.client';
 import { TursorAiRuntimeService } from '../tursor-ai/tursor-ai-runtime.service';
 import { ContextService } from '../context/context.service';
@@ -8,9 +8,8 @@ import type { WorkspaceSupabaseConfig } from '../context/workspace-config.types'
 import { WebsocketGateway } from './websocket.gateway';
 import type { CdpRunCallbacks } from '../cdp/cdp-step.types';
 
-@Injectable()
 export class RunOrchestratorService {
-  private readonly logger = new Logger(RunOrchestratorService.name);
+  private readonly logger = createLogger('RunOrchestratorService');
   private building = false;
   private cdpRunning = false;
   private embedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -22,7 +21,6 @@ export class RunOrchestratorService {
     private readonly tursorAiRuntime: TursorAiRuntimeService,
     private readonly tursorAi: TursorAiClient,
     private readonly cdpRunner: CdpRunnerService,
-    @Inject(forwardRef(() => WebsocketGateway))
     private readonly gateway: WebsocketGateway,
   ) {}
 

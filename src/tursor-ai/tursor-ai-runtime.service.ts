@@ -3,8 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { config } from '../lib/config';
+import { createLogger } from '../lib/logger';
 
 const execFileAsync = promisify(execFile);
 
@@ -14,18 +14,14 @@ type PortJson = {
   origin?: string | null;
 };
 
-@Injectable()
-export class TursorAiRuntimeService implements OnModuleInit {
-  private readonly logger = new Logger(TursorAiRuntimeService.name);
+export class TursorAiRuntimeService {
+  private readonly logger = createLogger('TursorAiRuntimeService');
   private resolvedOrigin: string | null = null;
 
-  constructor(private readonly configService: ConfigService) {}
-
-  async onModuleInit(): Promise<void> {
+  async init(): Promise<void> {
     await this.refresh();
   }
 
-  /** Resolved base URL (no trailing slash), or null if Tursor-AI is not up. */
   getResolvedOrigin(): string | null {
     return this.resolvedOrigin;
   }
@@ -35,10 +31,7 @@ export class TursorAiRuntimeService implements OnModuleInit {
     if (fromRuntime) {
       return fromRuntime;
     }
-    const raw =
-      this.configService.get<string>('TURSOR_AI_URL') ??
-      'http://127.0.0.1:8000';
-    return raw.replace(/\/$/, '');
+    return config.tursorAiUrl;
   }
 
   isReachable(): boolean {
@@ -78,7 +71,6 @@ export class TursorAiRuntimeService implements OnModuleInit {
     return false;
   }
 
-  /** Best-effort start via local `tursorAI` CLI, then poll /health. */
   async tryStartViaCli(): Promise<boolean> {
     const cli = this.tursorAiCliPath();
     try {

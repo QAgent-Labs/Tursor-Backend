@@ -2,6 +2,7 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 const {
   VERSION,
   printBanner,
@@ -20,6 +21,17 @@ const {
   resolveBackendPort,
   pollHealthUntilUp,
 } = require('./tursor-runtime');
+
+const BACKEND_ROOT = path.resolve(__dirname, '..');
+
+function spawnEnv() {
+  const env = { ...process.env };
+  const browsersPath = env.PLAYWRIGHT_BROWSERS_PATH?.trim();
+  if (browsersPath?.includes('cursor-sandbox-cache')) {
+    delete env.PLAYWRIGHT_BROWSERS_PATH;
+  }
+  return env;
+}
 
 const command = process.argv[2];
 const argv = process.argv.slice(2);
@@ -47,7 +59,11 @@ switch (command) {
 
       printInfo('Building backend…');
 
-      const build = spawn('npm', ['run', 'build'], { stdio: 'inherit' });
+      const build = spawn('npm', ['run', 'build'], {
+        stdio: 'inherit',
+        cwd: BACKEND_ROOT,
+        env: spawnEnv(),
+      });
       build.on('close', (code) => {
         if (code !== 0) {
           printError('Build failed. Start aborted.');
@@ -58,6 +74,8 @@ switch (command) {
         const child = spawn('npm', ['run', 'start:prod'], {
           detached: true,
           stdio: 'ignore',
+          cwd: BACKEND_ROOT,
+          env: spawnEnv(),
         });
 
         child.unref();

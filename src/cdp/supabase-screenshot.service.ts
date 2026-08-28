@@ -1,5 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createLogger } from '../lib/logger';
 import type { WorkspaceSupabaseBucketConfig } from '../context/workspace-config.types';
 
 function sleep(ms: number): Promise<void> {
@@ -24,9 +24,8 @@ function formatStorageError(error: {
   return parts.join(' — ');
 }
 
-@Injectable()
 export class SupabaseScreenshotService {
-  private readonly logger = new Logger(SupabaseScreenshotService.name);
+  private readonly logger = createLogger('SupabaseScreenshotService');
   private readonly clientCache = new Map<string, SupabaseClient>();
 
   isConfigured(config: WorkspaceSupabaseBucketConfig): boolean {

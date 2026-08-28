@@ -1,12 +1,8 @@
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { config } from '../lib/config';
 
-@Injectable()
 export class ScreenshotStorageService {
-  constructor(private readonly configService: ConfigService) {}
-
   createRunDirectory(workspacePath: string | null): {
     runId: string;
     dir: string;
@@ -73,12 +69,10 @@ export class ScreenshotStorageService {
   }
 
   publicScreenshotUrl(runId: string, stepId: string): string {
-    const port = this.configService.get<number>('PORT') ?? 9090;
     const safe = stepId.replace(/[^a-zA-Z0-9-_]/g, '_');
-    return `http://127.0.0.1:${port}/screenshots/${runId}/${safe}.png`;
+    return `http://127.0.0.1:${config.port}/screenshots/${runId}/${safe}.png`;
   }
 
-  /** Register absolute path for lookup (workspace-scoped runs). */
   registerRunLocation(runId: string, dir: string): void {
     const mapPath = path.join(dir, '..', '.index.json');
     const parent = path.dirname(mapPath);

@@ -1,22 +1,13 @@
-import { Inject, Logger, forwardRef } from '@nestjs/common';
-import {
-  MessageBody,
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-  OnGatewayInit,
-  SubscribeMessage,
-  WebSocketGateway,
-  WebSocketServer,
-} from '@nestjs/websockets';
-import { Server, Socket } from 'socket.io';
+import type { Server, Socket } from 'socket.io';
 import { ContextService } from '../context/context.service';
+import { createLogger } from '../lib/logger';
+import type { RunOrchestratorService } from './run-orchestrator.service';
 import {
   type RunLogCategory,
   type RunLogLevel,
   type RunLogPayload,
   type RunLogSocketEvent,
 } from './run-log.types';
-import { RunOrchestratorService } from './run-orchestrator.service';
 
 export type OutboundSocketEvent =
   | { type: 'step_update'; stepId: string; step: string; status: 'running' }
@@ -25,9 +16,7 @@ export type OutboundSocketEvent =
   | { type: 'screenshot'; stepId: string; url: string }
   | { type: 'complete'; status: 'success' | 'fail' }
   | { type: 'context_building' }
-  | {
-      type: 'context_ready';
-    }
+  | { type: 'context_ready' }
   | {
       type: 'context_error';
       code: string;
@@ -53,23 +42,10 @@ type SessionConfigEvent = {
   frontendPort?: number;
 };
 
-type StartContextEvent = {
-  type: 'start_context';
-};
-
-type RevalidateContextEvent = {
-  type: 'revalidate_context';
-};
-
-type StartCdpEvent = {
-  type: 'start_cdp';
-};
-
-type UserMessageEvent = {
-  type: 'user_message';
-  id: string;
-  text: string;
-};
+type StartContextEvent = { type: 'start_context' };
+type RevalidateContextEvent = { type: 'revalidate_context' };
+type StartCdpEvent = { type: 'start_cdp' };
+type UserMessageEvent = { type: 'user_message'; id: string; text: string };
 
 type InboundSocketEvent =
   | WorkspaceInitEvent
@@ -79,34 +55,41 @@ type InboundSocketEvent =
   | StartCdpEvent
   | UserMessageEvent;
 
-@WebSocketGateway({
-  path: '/ws',
-  cors: { origin: '*' },
-})
-export class WebsocketGateway
-  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
-{
-  private readonly logger = new Logger(WebsocketGateway.name);
+export class WebsocketGateway {
+  private readonly logger = createLogger('WebsocketGateway');
+  private server: Server | null = null;
+  private runOrchestrator: RunOrchestratorService | null = null;
 
-  constructor(
-    private readonly contextService: ContextService,
-    @Inject(forwardRef(() => RunOrchestratorService))
-    private readonly runOrchestrator: RunOrchestratorService,
-  ) {}
+  constructor(private readonly contextService: ContextService) {}
 
-  @WebSocketServer()
-  server!: Server;
+  setRunOrchestrator(runOrchestrator: RunOrchestratorService): void {
+    this.runOrchestrator = runOrchestrator;
+  }
 
-  afterInit(): void {
+  attach(server: Server): void {
+    this.server = server;
     this.logger.log('WebSocket ready at path /ws (Socket.IO)');
     this.emitRunLog({
       category: 'system',
       level: 'info',
       message: 'WebSocket server initialized at path /ws.',
     });
+
+    server.on('connection', (client: Socket) => {
+      this.handleConnection(client);
+      client.on('disconnect', () => this.handleDisconnect(client));
+      client.on('message', (data: InboundSocketEvent) => {
+        this.handleMessage(data);
+      });
+      client.onAny((event, ...args) => {
+        this.logger.log(
+          `Event received [${client.id}] event="${event}" payload=${JSON.stringify(args)}`,
+        );
+      });
+    });
   }
 
-  handleConnection(client: Socket): void {
+  private handleConnection(client: Socket): void {
     this.logger.log(`Client connected: ${client.id}`);
     this.emitRunLog({
       category: 'connection',
@@ -114,15 +97,9 @@ export class WebsocketGateway
       message: `Client connected (${client.id}).`,
       meta: { clientId: client.id },
     });
-
-    client.onAny((event, ...args) => {
-      this.logger.log(
-        `Event received [${client.id}] event="${event}" payload=${JSON.stringify(args)}`,
-      );
-    });
   }
 
-  handleDisconnect(client: Socket): void {
+  private handleDisconnect(client: Socket): void {
     this.logger.log(`Client disconnected: ${client.id}`);
     this.contextService.clearWorkspaceContext();
     this.emitRunLog({
@@ -133,11 +110,8 @@ export class WebsocketGateway
     });
   }
 
-  @SubscribeMessage('message')
-  handleMessage(@MessageBody() data: InboundSocketEvent): void {
-    this.logger.log(
-      `SubscribeMessage("message") payload=${JSON.stringify(data)}`,
-    );
+  handleMessage(data: InboundSocketEvent): void {
+    this.logger.log(`SubscribeMessage("message") payload=${JSON.stringify(data)}`);
 
     const inboundType = (data as { type?: string })?.type ?? 'unknown';
     this.emitRunLog({
@@ -146,6 +120,11 @@ export class WebsocketGateway
       message: `Inbound message received: ${inboundType}.`,
       meta: { inboundType },
     });
+
+    const runOrchestrator = this.runOrchestrator;
+    if (!runOrchestrator) {
+      return;
+    }
 
     if (data?.type === 'workspace_init') {
       const port =
@@ -157,10 +136,7 @@ export class WebsocketGateway
         category: 'context',
         level: 'info',
         message: `Workspace initialized: ${data.workspacePath}`,
-        meta: {
-          workspacePath: data.workspacePath,
-          frontendPort: port ?? null,
-        },
+        meta: { workspacePath: data.workspacePath, frontendPort: port ?? null },
       });
       if (port) {
         this.emitRunLog({
@@ -179,14 +155,11 @@ export class WebsocketGateway
           typeof data.frontendPort === 'number' && data.frontendPort > 0
             ? data.frontendPort
             : undefined;
-        this.contextService.setWorkspaceContext(
-          data.workspacePath.trim(),
-          port,
-        );
+        this.contextService.setWorkspaceContext(data.workspacePath.trim(), port);
         this.emitRunLog({
           category: 'context',
           level: 'info',
-          message: `Session config updated (workspace + frontend).`,
+          message: 'Session config updated (workspace + frontend).',
           meta: {
             workspacePath: data.workspacePath.trim(),
             frontendPort: port ?? null,
@@ -207,8 +180,7 @@ export class WebsocketGateway
         this.emitRunLog({
           category: 'context',
           level: 'warn',
-          message:
-            'Session config received with no workspace or frontend port.',
+          message: 'Session config received with no workspace or frontend port.',
         });
       }
       return;
@@ -229,7 +201,7 @@ export class WebsocketGateway
           message: 'Context pipeline start requested.',
         });
       }
-      void this.runOrchestrator.startContextPipeline();
+      void runOrchestrator.startContextPipeline();
       return;
     }
 
@@ -239,7 +211,7 @@ export class WebsocketGateway
         level: 'info',
         message: 'Run screen requested CDP demo start.',
       });
-      void this.runOrchestrator.startCdpRun();
+      void runOrchestrator.startCdpRun();
       return;
     }
 
@@ -256,7 +228,6 @@ export class WebsocketGateway
       }
 
       const preview = text.length > 280 ? `${text.slice(0, 277)}…` : text;
-
       this.emit({
         type: 'chat',
         id: `assistant-${Date.now()}`,
@@ -264,14 +235,12 @@ export class WebsocketGateway
         text: `Understood. I'll queue this for the QA agent: "${preview}"`,
         replyTo: id || undefined,
       });
-
       this.emitRunLog({
         category: 'chat',
         level: 'info',
         message: `User instruction received (${text.length} chars).`,
         meta: { messageId: id || null, preview },
       });
-
       return;
     }
 
@@ -286,8 +255,8 @@ export class WebsocketGateway
     });
   }
 
-  emit(event: OutboundSocketEvent) {
-    this.server.emit('message', event);
+  emit(event: OutboundSocketEvent): void {
+    this.server?.emit('message', event);
   }
 
   emitRunLog(payload: RunLogPayload): void {
@@ -302,26 +271,21 @@ export class WebsocketGateway
       meta: payload.meta,
     };
 
-    const nestLevel =
-      level === 'error'
-        ? 'error'
-        : level === 'warn'
-          ? 'warn'
-          : level === 'debug'
-            ? 'debug'
-            : 'log';
-    this.logger[nestLevel](`[${payload.category}] ${payload.message}`);
+    if (level === 'error') {
+      this.logger.error(`[${payload.category}] ${payload.message}`);
+    } else if (level === 'warn') {
+      this.logger.warn(`[${payload.category}] ${payload.message}`);
+    } else if (level === 'debug') {
+      this.logger.debug(`[${payload.category}] ${payload.message}`);
+    } else {
+      this.logger.log(`[${payload.category}] ${payload.message}`);
+    }
 
     this.emit(event);
   }
 
-  sendStepUpdate(stepId: string, step: string) {
-    this.emit({
-      type: 'step_update',
-      stepId,
-      step,
-      status: 'running',
-    });
+  sendStepUpdate(stepId: string, step: string): void {
+    this.emit({ type: 'step_update', stepId, step, status: 'running' });
     this.emitRunLog({
       category: 'step',
       level: 'info',
@@ -331,12 +295,8 @@ export class WebsocketGateway
     });
   }
 
-  sendStepResult(stepId: string, status: 'success' | 'fail') {
-    this.emit({
-      type: 'step_result',
-      stepId,
-      status,
-    });
+  sendStepResult(stepId: string, status: 'success' | 'fail'): void {
+    this.emit({ type: 'step_result', stepId, status });
     this.emitRunLog({
       category: 'step',
       level: status === 'success' ? 'success' : 'error',
@@ -346,7 +306,7 @@ export class WebsocketGateway
     });
   }
 
-  sendLog(stepId: string, message: string, category: RunLogCategory = 'cdp') {
+  sendLog(stepId: string, message: string, category: RunLogCategory = 'cdp'): void {
     this.emitRunLog({
       category,
       level: message.toLowerCase().includes('failed') ? 'error' : 'info',
@@ -355,12 +315,8 @@ export class WebsocketGateway
     });
   }
 
-  sendScreenshot(stepId: string, url: string) {
-    this.emit({
-      type: 'screenshot',
-      stepId,
-      url,
-    });
+  sendScreenshot(stepId: string, url: string): void {
+    this.emit({ type: 'screenshot', stepId, url });
     this.emitRunLog({
       category: 'screenshot',
       level: 'success',
@@ -370,11 +326,8 @@ export class WebsocketGateway
     });
   }
 
-  sendComplete(status: 'success' | 'fail') {
-    this.emit({
-      type: 'complete',
-      status,
-    });
+  sendComplete(status: 'success' | 'fail'): void {
+    this.emit({ type: 'complete', status });
     this.emitRunLog({
       category: 'system',
       level: status === 'success' ? 'success' : 'error',
@@ -383,7 +336,7 @@ export class WebsocketGateway
     });
   }
 
-  emitContextBuilding() {
+  emitContextBuilding(): void {
     this.emit({ type: 'context_building' });
     this.emitRunLog({
       category: 'context',
@@ -392,7 +345,7 @@ export class WebsocketGateway
     });
   }
 
-  emitContextReady() {
+  emitContextReady(): void {
     this.emit({ type: 'context_ready' });
     this.emitRunLog({
       category: 'context',
@@ -401,12 +354,8 @@ export class WebsocketGateway
     });
   }
 
-  emitContextError(code: string, message: string) {
-    this.emit({
-      type: 'context_error',
-      code,
-      message,
-    });
+  emitContextError(code: string, message: string): void {
+    this.emit({ type: 'context_error', code, message });
     this.emitRunLog({
       category: 'error',
       level: 'error',

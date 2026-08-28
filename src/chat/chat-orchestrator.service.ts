@@ -1,11 +1,8 @@
 import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-  forwardRef,
-} from '@nestjs/common';
+  BadRequestError,
+  NotFoundError,
+} from '../lib/http-error';
+import { createLogger } from '../lib/logger';
 import { ContextService } from '../context/context.service';
 import { WorkspaceConfigValidator } from '../context/workspace-config.validator';
 import type {
@@ -39,9 +36,8 @@ type WorkspaceBundle = {
   ai: WorkspaceAiConfig;
 };
 
-@Injectable()
 export class ChatOrchestratorService {
-  private readonly logger = new Logger(ChatOrchestratorService.name);
+  private readonly logger = createLogger('ChatOrchestratorService');
 
   constructor(
     private readonly contextService: ContextService,
@@ -49,7 +45,6 @@ export class ChatOrchestratorService {
     private readonly supabaseChat: SupabaseChatService,
     private readonly tursorAi: TursorAiClient,
     private readonly tursorAiRuntime: TursorAiRuntimeService,
-    @Inject(forwardRef(() => RunOrchestratorService))
     private readonly runOrchestrator: RunOrchestratorService,
   ) {}
 
@@ -57,12 +52,12 @@ export class ChatOrchestratorService {
     const active = this.contextService.getWorkspacePath();
     const path = (requestedPath?.trim() || active || '').trim();
     if (!path) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         'No workspace path. Connect from the extension or pass workspacePath.',
       );
     }
     if (active && requestedPath?.trim() && path !== active) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         'workspacePath does not match the active Tursor session workspace.',
       );
     }
@@ -75,10 +70,10 @@ export class ChatOrchestratorService {
   private loadWorkspaceBundle(workspacePath: string): WorkspaceBundle {
     const validated = this.validator.validate(workspacePath);
     if (!validated.ok) {
-      throw new BadRequestException(validated.error);
+      throw new BadRequestError(validated.error);
     }
     if (!validated.ai) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         'Missing required "ai" object in .tursor/config.json (generationModel, apiKey).',
       );
     }
@@ -96,7 +91,7 @@ export class ChatOrchestratorService {
     }
     const started = await this.tursorAiRuntime.tryStartViaCli();
     if (!started) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         'Tursor-AI is not reachable. Run tursorAI start or complete install.',
       );
     }
@@ -226,7 +221,7 @@ export class ChatOrchestratorService {
   }> {
     const text = userMessage.trim();
     if (!text) {
-      throw new BadRequestException('message must be non-empty');
+      throw new BadRequestError('message must be non-empty');
     }
 
     const workspacePath = this.resolveWorkspace(requestedWorkspacePath);
@@ -237,16 +232,16 @@ export class ChatOrchestratorService {
       conversationId,
     );
     if (!conversation) {
-      throw new NotFoundException(`Conversation ${conversationId} not found`);
+      throw new NotFoundError(`Conversation ${conversationId} not found`);
     }
     if (conversation.workspacePath !== workspacePath) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         'Conversation belongs to a different workspace. Start a new conversation.',
       );
     }
 
     if (!this.contextService.isContextReady()) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         'Workspace context is not ready. Wait for embeddings to finish (context_ready).',
       );
     }
@@ -313,10 +308,10 @@ export class ChatOrchestratorService {
       conversationId,
     );
     if (!conversation) {
-      throw new NotFoundException(`Conversation ${conversationId} not found`);
+      throw new NotFoundError(`Conversation ${conversationId} not found`);
     }
     if (!canApproveTestFlow(conversation.status)) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         `Conversation is not awaiting test approval (status=${conversation.status}).`,
       );
     }
@@ -327,7 +322,7 @@ export class ChatOrchestratorService {
     );
     const approvedFlow = this.supabaseChat.extractApprovedTestFlow(history);
     if (!approvedFlow) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         'No test proposal found in conversation history.',
       );
     }
@@ -355,7 +350,7 @@ export class ChatOrchestratorService {
     });
 
     if (ai.type !== 'test_generation' || !ai.code) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         ai.content ?? 'Test generation did not return Playwright code.',
       );
     }
@@ -415,10 +410,10 @@ export class ChatOrchestratorService {
       conversationId,
     );
     if (!conversation) {
-      throw new NotFoundException(`Conversation ${conversationId} not found`);
+      throw new NotFoundError(`Conversation ${conversationId} not found`);
     }
     if (!canExecuteTest(conversation.status)) {
-      throw new BadRequestException(
+      throw new BadRequestError(
         `Conversation is not ready for execution (status=${conversation.status}).`,
       );
     }
@@ -428,7 +423,7 @@ export class ChatOrchestratorService {
       conversationId,
     );
     if (!generatedTest) {
-      throw new BadRequestException('No generated test found for conversation.');
+      throw new BadRequestError('No generated test found for conversation.');
     }
 
     await this.supabaseChat.updateConversationStatus(
@@ -474,7 +469,7 @@ export class ChatOrchestratorService {
       conversationId,
     );
     if (!conversation) {
-      throw new NotFoundException(`Conversation ${conversationId} not found`);
+      throw new NotFoundError(`Conversation ${conversationId} not found`);
     }
 
     const messages = await this.supabaseChat.listMessages(

@@ -1,4 +1,3 @@
-import { Injectable } from '@nestjs/common';
 
 export interface WorkspaceContext {
   workspacePath: string;
@@ -16,7 +15,6 @@ export interface WorkspaceContextResponse {
   contextReady: boolean;
 }
 
-@Injectable()
 export class ContextService {
   private context: WorkspaceContext | null = null;
 
