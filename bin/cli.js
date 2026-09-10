@@ -78,7 +78,9 @@ switch (command) {
           printWarn(
             `Process started (PID ${child.pid}) but /health did not respond in time.`,
           );
-          printInfo('Run `tursor port` after a few seconds to resolve the port.');
+          printInfo(
+            'Run `tursor port` after a few seconds to resolve the port.',
+          );
           process.exit(0);
         })();
       });
@@ -147,10 +149,7 @@ switch (command) {
           JSON.stringify({
             running: status.running,
             port,
-            origin:
-              status.running && port
-                ? `http://127.0.0.1:${port}`
-                : null,
+            origin: status.running && port ? `http://127.0.0.1:${port}` : null,
           }),
         );
         process.exit(status.running ? 0 : 1);
