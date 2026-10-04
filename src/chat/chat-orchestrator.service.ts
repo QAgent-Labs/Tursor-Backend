@@ -1,7 +1,4 @@
-import {
-  BadRequestError,
-  NotFoundError,
-} from '../lib/http-error';
+import { BadRequestError, NotFoundError } from '../lib/http-error';
 import { createLogger } from '../lib/logger';
 import { ContextService } from '../context/context.service';
 import { WorkspaceConfigValidator } from '../context/workspace-config.validator';
@@ -9,32 +6,89 @@ import type {
   WorkspaceAiConfig,
   WorkspaceSupabaseConfig,
 } from '../context/workspace-config.types';
+import type { CdpAction, CdpStepDefinition } from '../cdp/cdp-step.types';
 import { TursorAiClient } from '../tursor-ai/tursor-ai.client';
 import { TursorAiRuntimeService } from '../tursor-ai/tursor-ai-runtime.service';
 import { RunOrchestratorService } from '../websocket/run-orchestrator.service';
 import type {
-  AiStructuredResponse,
-  ChatMessageDto,
+  ChatTurnResponse,
   ConversationDto,
-  ConversationStatus,
-  GeneratedTestDto,
-  MessageType,
-  TestFlowStep,
+  ConversationListItem,
+  ConversationSummary,
 } from './chat.types';
-import {
-  canApproveTestFlow,
-  canExecuteTest,
-  nextStatusAfterAiResponse,
-} from './conversation-state';
 import { SupabaseChatService } from './supabase-chat.service';
-
-const RECENT_MESSAGE_WINDOW = 16;
 
 type WorkspaceBundle = {
   workspacePath: string;
   supabase: WorkspaceSupabaseConfig;
   ai: WorkspaceAiConfig;
 };
+
+function parseSummary(raw: string): ConversationSummary {
+  const empty: ConversationSummary = { case: '', plans: [] };
+  const text = raw.trim();
+  if (!text) {
+    return empty;
+  }
+  try {
+    const data = JSON.parse(text) as {
+      case?: unknown;
+      plans?: unknown;
+    };
+    const plans = Array.isArray(data.plans)
+      ? data.plans.flatMap((item) => {
+          if (!item || typeof item !== 'object') {
+            return [];
+          }
+          const plan = item as { id?: unknown; title?: unknown };
+          if (typeof plan.id !== 'string' || !plan.id) {
+            return [];
+          }
+          return [
+            {
+              id: plan.id,
+              title: typeof plan.title === 'string' ? plan.title : '',
+            },
+          ];
+        })
+      : [];
+    return {
+      case: typeof data.case === 'string' ? data.case : text,
+      plans,
+    };
+  } catch {
+    return { case: text, plans: [] };
+  }
+}
+
+function asCdpSteps(raw: unknown): CdpStepDefinition[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return null;
+  }
+  const steps: CdpStepDefinition[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') {
+      return null;
+    }
+    const step = item as { id?: unknown; label?: unknown; actions?: unknown };
+    if (
+      typeof step.id !== 'string' ||
+      !step.id ||
+      typeof step.label !== 'string' ||
+      !step.label ||
+      !Array.isArray(step.actions) ||
+      step.actions.length === 0
+    ) {
+      return null;
+    }
+    steps.push({
+      id: step.id,
+      label: step.label,
+      actions: step.actions as CdpAction[],
+    });
+  }
+  return steps;
+}
 
 export class ChatOrchestratorService {
   private readonly logger = createLogger('ChatOrchestratorService');
@@ -97,71 +151,25 @@ export class ChatOrchestratorService {
     }
   }
 
-  private mapAiResult(result: {
-    type: string;
-    content?: string;
-    status?: string;
-    testFlow?: TestFlowStep[];
-    language?: string;
-    framework?: string;
-    testName?: string;
-    code?: string;
-    retrieved_chunk_count?: number;
-  }): AiStructuredResponse {
-    return {
-      type: result.type as AiStructuredResponse['type'],
-      content: result.content,
-      status: result.status,
-      testFlow: result.testFlow,
-      language: result.language,
-      framework: result.framework,
-      testName: result.testName,
-      code: result.code,
-      retrievedChunkCount: result.retrieved_chunk_count,
-    };
-  }
-
-  private messageTypeFromAi(ai: AiStructuredResponse): MessageType {
-    if (ai.type === 'test_proposal') return 'test_proposal';
-    if (ai.type === 'test_generation') return 'test_generation';
-    return 'chat';
-  }
-
-  private metadataFromAi(ai: AiStructuredResponse): Record<string, unknown> {
-    const meta: Record<string, unknown> = {
-      aiType: ai.type,
-      status: ai.status,
-      retrievedChunkCount: ai.retrievedChunkCount ?? 0,
-    };
-    if (ai.testFlow) {
-      meta.testFlow = ai.testFlow;
-    }
-    if (ai.code) {
-      meta.language = ai.language;
-      meta.framework = ai.framework;
-      meta.testName = ai.testName;
-    }
-    return meta;
-  }
-
-  private recentMessagesForLlm(messages: ChatMessageDto[]) {
-    return messages.slice(-RECENT_MESSAGE_WINDOW).map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
-  }
-
-  private async callTursorAiChat(
+  private async completeTurn(
     bundle: WorkspaceBundle,
     input: {
       message: string;
-      mode: 'chat' | 'intro' | 'generate_test';
+      mode: 'intro' | 'chat';
       conversation: ConversationDto;
-      messages: ChatMessageDto[];
-      approvedTestFlow?: TestFlowStep[] | null;
     },
-  ): Promise<AiStructuredResponse> {
+  ): Promise<{ reply: string; case: string; steps: CdpStepDefinition[] | null }> {
     await this.ensureTursorAiReady();
+    const summary = parseSummary(input.conversation.summary);
+    const latestPlan = summary.plans[summary.plans.length - 1];
+    let latestSteps: CdpStepDefinition[] | null = null;
+    if (latestPlan && input.mode === 'chat') {
+      const stored = await this.supabaseChat.getCdpPlan(
+        bundle.supabase.database,
+        latestPlan.id,
+      );
+      latestSteps = stored?.steps?.length ? stored.steps : null;
+    }
 
     const result = await this.tursorAi.chatCompletion({
       workspace_path: bundle.workspacePath,
@@ -169,64 +177,70 @@ export class ChatOrchestratorService {
       generation_model: bundle.ai.generationModel,
       api_key: bundle.ai.apiKey,
       mode: input.mode,
-      conversation_state: input.conversation.status,
-      conversation_summary: input.conversation.summary || null,
-      recent_messages: this.recentMessagesForLlm(input.messages),
-      approved_test_flow: input.approvedTestFlow ?? null,
-      rag_query: input.mode === 'generate_test' ? input.message : undefined,
+      case: summary.case,
+      plans: summary.plans,
+      latest_cdp_steps: latestSteps,
     });
 
-    return this.mapAiResult(result);
+    return {
+      reply: result.reply || 'Something went wrong.',
+      case: result.case || summary.case,
+      steps: asCdpSteps(result.cdp_steps),
+    };
   }
 
-  async intro(requestedWorkspacePath?: string): Promise<{
-    conversation: ConversationDto;
-    message: ChatMessageDto;
-    ai: AiStructuredResponse;
-  }> {
+  async intro(requestedWorkspacePath?: string): Promise<ChatTurnResponse> {
     const workspacePath = this.resolveWorkspace(requestedWorkspacePath);
     const bundle = this.loadWorkspaceBundle(workspacePath);
-
     const conversation = await this.supabaseChat.createConversation(
       bundle.supabase.database,
       workspacePath,
     );
 
-    const ai = await this.callTursorAiChat(bundle, {
+    const ai = await this.completeTurn(bundle, {
       message: 'intro',
       mode: 'intro',
       conversation,
-      messages: [],
     });
 
-    const assistant = await this.supabaseChat.insertMessage(bundle.supabase.database, {
+    const summary: ConversationSummary = { case: ai.case, plans: [] };
+    await this.supabaseChat.updateSummary(
+      bundle.supabase.database,
+      conversation.id,
+      JSON.stringify(summary),
+    );
+
+    await this.supabaseChat.insertMessage(bundle.supabase.database, {
       conversationId: conversation.id,
       role: 'assistant',
-      content: ai.content ?? 'Hello! How can I help you test this codebase?',
-      messageType: this.messageTypeFromAi(ai),
-      metadata: this.metadataFromAi(ai),
+      content: ai.reply,
+      messageType: 'chat',
+      metadata: { cdpStepsId: null },
     });
 
-    return { conversation, message: assistant, ai };
+    return {
+      conversationId: conversation.id,
+      reply: ai.reply,
+      cdpStepsId: null,
+      summary,
+    };
   }
 
   async postMessage(
     conversationId: string,
     userMessage: string,
     requestedWorkspacePath?: string,
-  ): Promise<{
-    conversation: ConversationDto;
-    message: ChatMessageDto;
-    ai: AiStructuredResponse;
-  }> {
+  ): Promise<ChatTurnResponse> {
     const text = userMessage.trim();
     if (!text) {
       throw new BadRequestError('message must be non-empty');
     }
+    if (!conversationId?.trim()) {
+      throw new BadRequestError('conversationId is required');
+    }
 
     const workspacePath = this.resolveWorkspace(requestedWorkspacePath);
     const bundle = this.loadWorkspaceBundle(workspacePath);
-
     const conversation = await this.supabaseChat.getConversation(
       bundle.supabase.database,
       conversationId,
@@ -239,7 +253,6 @@ export class ChatOrchestratorService {
         'Conversation belongs to a different workspace. Start a new conversation.',
       );
     }
-
     if (!this.contextService.isContextReady()) {
       throw new BadRequestError(
         'Workspace context is not ready. Wait for embeddings to finish (context_ready).',
@@ -253,217 +266,101 @@ export class ChatOrchestratorService {
       messageType: 'chat',
     });
 
-    const history = await this.supabaseChat.listMessages(
-      bundle.supabase.database,
-      conversationId,
-    );
-
-    const ai = await this.callTursorAiChat(bundle, {
+    const ai = await this.completeTurn(bundle, {
       message: text,
       mode: 'chat',
       conversation,
-      messages: history,
     });
 
-    const nextStatus = nextStatusAfterAiResponse(conversation.status, ai.type);
-    await this.supabaseChat.updateConversationStatus(
-      bundle.supabase.database,
-      conversationId,
-      nextStatus,
-    );
-
-    const assistant = await this.supabaseChat.insertMessage(bundle.supabase.database, {
-      conversationId,
-      role: 'assistant',
-      content:
-        ai.content ??
-        (ai.type === 'error' ? 'Something went wrong.' : 'OK.'),
-      messageType: this.messageTypeFromAi(ai),
-      metadata: this.metadataFromAi(ai),
-    });
-
-    const updated = await this.supabaseChat.getConversation(
-      bundle.supabase.database,
-      conversationId,
-    );
-
-    return {
-      conversation: updated ?? { ...conversation, status: nextStatus },
-      message: assistant,
-      ai,
-    };
-  }
-
-  async approveTestFlow(conversationId: string): Promise<{
-    conversation: ConversationDto;
-    message: ChatMessageDto;
-    ai: AiStructuredResponse;
-    generatedTest: GeneratedTestDto;
-  }> {
-    const workspacePath = this.resolveWorkspace();
-    const bundle = this.loadWorkspaceBundle(workspacePath);
-
-    const conversation = await this.supabaseChat.getConversation(
-      bundle.supabase.database,
-      conversationId,
-    );
-    if (!conversation) {
-      throw new NotFoundError(`Conversation ${conversationId} not found`);
-    }
-    if (!canApproveTestFlow(conversation.status)) {
-      throw new BadRequestError(
-        `Conversation is not awaiting test approval (status=${conversation.status}).`,
+    const previous = parseSummary(conversation.summary);
+    let cdpStepsId: string | null = null;
+    const plans = [...previous.plans];
+    if (ai.steps) {
+      const saved = await this.supabaseChat.saveCdpPlan(
+        bundle.supabase.database,
+        {
+          conversationId,
+          workspacePath,
+          title: ai.steps[0]?.label || 'CDP plan',
+          steps: ai.steps,
+        },
       );
+      cdpStepsId = saved.id;
+      plans.push({ id: saved.id, title: saved.title });
     }
 
-    const history = await this.supabaseChat.listMessages(
+    const summary: ConversationSummary = { case: ai.case, plans };
+    await this.supabaseChat.updateSummary(
       bundle.supabase.database,
       conversationId,
-    );
-    const approvedFlow = this.supabaseChat.extractApprovedTestFlow(history);
-    if (!approvedFlow) {
-      throw new BadRequestError(
-        'No test proposal found in conversation history.',
-      );
-    }
-
-    await this.supabaseChat.updateConversationStatus(
-      bundle.supabase.database,
-      conversationId,
-      'GENERATING_TEST',
+      JSON.stringify(summary),
     );
 
     await this.supabaseChat.insertMessage(bundle.supabase.database, {
       conversationId,
-      role: 'user',
-      content: 'Yes, generate the Playwright test for the proposed flow.',
-      messageType: 'test_approval',
-      metadata: { approvedTestFlow: approvedFlow },
-    });
-
-    const ai = await this.callTursorAiChat(bundle, {
-      message: 'Generate the approved Playwright test.',
-      mode: 'generate_test',
-      conversation: { ...conversation, status: 'GENERATING_TEST' },
-      messages: history,
-      approvedTestFlow: approvedFlow,
-    });
-
-    if (ai.type !== 'test_generation' || !ai.code) {
-      throw new BadRequestError(
-        ai.content ?? 'Test generation did not return Playwright code.',
-      );
-    }
-
-    const generatedTest = await this.supabaseChat.saveGeneratedTest(
-      bundle.supabase.database,
-      {
-        conversationId,
-        workspacePath,
-        testName: ai.testName ?? null,
-        language: ai.language ?? 'typescript',
-        framework: ai.framework ?? 'playwright',
-        code: ai.code,
-      },
-    );
-
-    await this.supabaseChat.updateConversationStatus(
-      bundle.supabase.database,
-      conversationId,
-      'TEST_GENERATED',
-    );
-
-    const assistant = await this.supabaseChat.insertMessage(bundle.supabase.database, {
-      conversationId,
       role: 'assistant',
-      content: ai.content ?? 'Generated Playwright test.',
-      messageType: 'test_generation',
-      metadata: {
-        ...this.metadataFromAi(ai),
-        generatedTestId: generatedTest.id,
-      },
+      content: ai.reply,
+      messageType: 'chat',
+      metadata: { cdpStepsId },
     });
-
-    const updated = await this.supabaseChat.getConversation(
-      bundle.supabase.database,
-      conversationId,
-    );
 
     return {
-      conversation: updated ?? conversation,
-      message: assistant,
-      ai,
-      generatedTest,
+      conversationId,
+      reply: ai.reply,
+      cdpStepsId,
+      summary,
     };
   }
 
-  async approveExecution(conversationId: string): Promise<{
-    conversation: ConversationDto;
-    generatedTest: GeneratedTestDto;
-    executionStarted: boolean;
-  }> {
+  async listConversations(
+    requestedWorkspacePath?: string,
+  ): Promise<{ conversations: ConversationListItem[] }> {
+    const workspacePath = this.resolveWorkspace(requestedWorkspacePath);
+    const bundle = this.loadWorkspaceBundle(workspacePath);
+    const rows = await this.supabaseChat.listConversations(
+      bundle.supabase.database,
+      workspacePath,
+    );
+    return {
+      conversations: rows.map((row) => ({
+        id: row.id,
+        summary: parseSummary(row.summary),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })),
+    };
+  }
+
+  async runCdpPlan(cdpStepsId: string): Promise<{ ok: true; cdpStepsId: string }> {
+    const id = cdpStepsId?.trim();
+    if (!id) {
+      throw new BadRequestError('cdpStepsId is required');
+    }
     const workspacePath = this.resolveWorkspace();
     const bundle = this.loadWorkspaceBundle(workspacePath);
-
-    const conversation = await this.supabaseChat.getConversation(
+    const plan = await this.supabaseChat.getCdpPlan(
       bundle.supabase.database,
-      conversationId,
+      id,
     );
-    if (!conversation) {
-      throw new NotFoundError(`Conversation ${conversationId} not found`);
+    if (!plan || plan.workspacePath !== workspacePath) {
+      throw new NotFoundError(`CDP plan ${id} not found`);
     }
-    if (!canExecuteTest(conversation.status)) {
-      throw new BadRequestError(
-        `Conversation is not ready for execution (status=${conversation.status}).`,
-      );
+    if (!plan.steps.length) {
+      throw new BadRequestError('CDP plan has no steps');
     }
 
-    const generatedTest = await this.supabaseChat.getLatestGeneratedTest(
-      bundle.supabase.database,
-      conversationId,
-    );
-    if (!generatedTest) {
-      throw new BadRequestError('No generated test found for conversation.');
-    }
-
-    await this.supabaseChat.updateConversationStatus(
-      bundle.supabase.database,
-      conversationId,
-      'EXECUTING',
-    );
-
-    await this.supabaseChat.insertMessage(bundle.supabase.database, {
-      conversationId,
-      role: 'user',
-      content: 'Approve and run the generated test.',
-      messageType: 'test_approval',
-      metadata: { generatedTestId: generatedTest.id },
-    });
-
-    // Phase 1: run existing demo CDP flow via WebSocket events.
-    // Generated test code is persisted; dynamic runner executes it in a later phase.
-    void this.runOrchestrator.startCdpRun();
-
-    const updated = await this.supabaseChat.getConversation(
-      bundle.supabase.database,
-      conversationId,
-    );
-
-    return {
-      conversation: updated ?? conversation,
-      generatedTest,
-      executionStarted: true,
-    };
+    void this.runOrchestrator.startCdpRun(plan.steps);
+    this.logger.log(`Started CDP plan ${id} (${plan.steps.length} steps)`);
+    return { ok: true, cdpStepsId: id };
   }
 
   async getConversation(conversationId: string): Promise<{
     conversation: ConversationDto;
-    messages: ChatMessageDto[];
-    generatedTest: GeneratedTestDto | null;
+    summary: ConversationSummary;
+    messages: Awaited<ReturnType<SupabaseChatService['listMessages']>>;
   }> {
     const workspacePath = this.resolveWorkspace();
     const bundle = this.loadWorkspaceBundle(workspacePath);
-
     const conversation = await this.supabaseChat.getConversation(
       bundle.supabase.database,
       conversationId,
@@ -471,16 +368,14 @@ export class ChatOrchestratorService {
     if (!conversation) {
       throw new NotFoundError(`Conversation ${conversationId} not found`);
     }
-
     const messages = await this.supabaseChat.listMessages(
       bundle.supabase.database,
       conversationId,
     );
-    const generatedTest = await this.supabaseChat.getLatestGeneratedTest(
-      bundle.supabase.database,
-      conversationId,
-    );
-
-    return { conversation, messages, generatedTest };
+    return {
+      conversation,
+      summary: parseSummary(conversation.summary),
+      messages,
+    };
   }
 }

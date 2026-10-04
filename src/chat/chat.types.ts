@@ -9,23 +9,7 @@ export type ConversationStatus =
 
 export type MessageRole = 'user' | 'assistant' | 'system';
 
-export type MessageType =
-  | 'chat'
-  | 'test_proposal'
-  | 'test_generation'
-  | 'test_approval'
-  | 'execution_result';
-
-export type AiResponseType =
-  | 'conversation'
-  | 'test_proposal'
-  | 'test_generation'
-  | 'error';
-
-export type TestFlowStep = {
-  step: number;
-  action: string;
-};
+export type MessageType = 'chat';
 
 export type ChatMessageDto = {
   id: string;
@@ -46,27 +30,26 @@ export type ConversationDto = {
   updatedAt: string;
 };
 
-export type GeneratedTestDto = {
+export type SummaryPlan = {
   id: string;
-  conversationId: string;
-  workspacePath: string;
-  testName: string | null;
-  language: string;
-  framework: string;
-  code: string;
-  version: number;
-  status: string;
-  createdAt: string;
+  title: string;
 };
 
-export type AiStructuredResponse = {
-  type: AiResponseType;
-  content?: string;
-  status?: string;
-  testFlow?: TestFlowStep[];
-  language?: string;
-  framework?: string;
-  testName?: string;
-  code?: string;
-  retrievedChunkCount?: number;
+export type ConversationSummary = {
+  case: string;
+  plans: SummaryPlan[];
+};
+
+export type ChatTurnResponse = {
+  conversationId: string;
+  reply: string;
+  cdpStepsId: string | null;
+  summary: ConversationSummary;
+};
+
+export type ConversationListItem = {
+  id: string;
+  summary: ConversationSummary;
+  createdAt: string;
+  updatedAt: string;
 };

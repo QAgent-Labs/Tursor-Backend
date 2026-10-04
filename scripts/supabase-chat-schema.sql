@@ -46,3 +46,15 @@ create table if not exists generated_tests (
 
 create index if not exists generated_tests_conversation_id_idx
   on generated_tests (conversation_id);
+
+create table if not exists cdp_plans (
+  id uuid primary key default gen_random_uuid(),
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  workspace_path text not null,
+  title text not null default '',
+  steps jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists cdp_plans_conversation_id_idx
+  on cdp_plans (conversation_id);

@@ -5,6 +5,7 @@ import type { Page } from 'playwright';
 import {
   type CdpRunCallbacks,
   type CdpAction,
+  type CdpStepDefinition,
   demoCdpSteps,
   describeAction,
 } from './cdp-step.types';
@@ -31,9 +32,9 @@ export class CdpRunnerService {
     workspacePath: string | null,
     bucketConfig: WorkspaceSupabaseBucketConfig,
     callbacks: CdpRunCallbacks,
+    steps: CdpStepDefinition[] = demoCdpSteps(),
   ): Promise<void> {
     const baseUrl = `http://127.0.0.1:${frontendPort}`;
-    const steps = demoCdpSteps();
     const headless = config.cdpHeadless;
     const slowMo = config.cdpSlowMo;
     const stepDelayMs = config.cdpStepDelayMs;
@@ -53,7 +54,7 @@ export class CdpRunnerService {
       `CDP run ${runId} started (headless=${headless}, slowMo=${slowMo}, stepDelayMs=${stepDelayMs}).`,
     );
     callbacks.onLog('run', `Target frontend: ${baseUrl}`);
-    callbacks.onLog('run', `Total demo steps: ${steps.length}`);
+    callbacks.onLog('run', `Total steps: ${steps.length}`);
     callbacks.onLog('run', 'Screenshot storage: Supabase (public URLs).');
 
     let browser: Awaited<
@@ -119,7 +120,7 @@ export class CdpRunnerService {
         }
       }
 
-      callbacks.onLog('run', 'Demo flow finished successfully.');
+      callbacks.onLog('run', 'CDP flow finished successfully.');
       callbacks.onComplete('success');
       this.logger.log(`CDP run ${runId} completed for ${baseUrl}`);
     } catch (err) {

@@ -90,20 +90,22 @@ export function createRoutes(app: AppContainer): Router {
   );
 
   router.post(
-    '/chat/approve-test-flow',
+    '/chat/run',
     asyncHandler(async (req, res) => {
-      res.json(
-        await app.chatOrchestrator.approveTestFlow(req.body.conversationId),
-      );
+      const cdpStepsId =
+        typeof req.body?.cdpStepsId === 'string' ? req.body.cdpStepsId : '';
+      res.json(await app.chatOrchestrator.runCdpPlan(cdpStepsId));
     }),
   );
 
-  router.post(
-    '/chat/approve-execution',
+  router.get(
+    '/chat/conversations',
     asyncHandler(async (req, res) => {
-      res.json(
-        await app.chatOrchestrator.approveExecution(req.body.conversationId),
-      );
+      const workspacePath =
+        typeof req.query.workspacePath === 'string'
+          ? req.query.workspacePath
+          : undefined;
+      res.json(await app.chatOrchestrator.listConversations(workspacePath));
     }),
   );
 

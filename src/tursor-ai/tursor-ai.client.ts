@@ -1,3 +1,4 @@
+import type { CdpStepDefinition } from '../cdp/cdp-step.types';
 import { createLogger } from '../lib/logger';
 import { TursorAiRuntimeService } from './tursor-ai-runtime.service';
 
@@ -27,25 +28,16 @@ export type TursorAiChatRequest = {
   message: string;
   generation_model: string;
   api_key: string;
-  mode?: 'chat' | 'intro' | 'generate_test';
-  conversation_state?: string;
-  conversation_summary?: string | null;
-  recent_messages?: Array<{ role: string; content: string }>;
-  approved_test_flow?: Array<{ step: number; action: string }> | null;
-  rag_query?: string | null;
-  rag_top_k?: number;
+  mode?: 'chat' | 'intro';
+  case?: string;
+  plans?: Array<{ id: string; title: string }>;
+  latest_cdp_steps?: CdpStepDefinition[] | null;
 };
 
 export type TursorAiChatResult = {
-  ok: boolean;
-  type: string;
-  content?: string;
-  status?: string;
-  testFlow?: Array<{ step: number; action: string }>;
-  language?: string;
-  framework?: string;
-  testName?: string;
-  code?: string;
+  reply: string;
+  case?: string;
+  cdp_steps?: CdpStepDefinition[] | null;
   retrieved_chunk_count?: number;
 };
 

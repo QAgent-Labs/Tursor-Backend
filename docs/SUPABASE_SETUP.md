@@ -51,9 +51,10 @@ supabase db push --file Tursor-Backend/scripts/supabase-chat-schema.sql
 
 | Table | Purpose |
 |-------|---------|
-| `conversations` | One row per chat session (`status`, `summary`, `workspace_path`) |
-| `conversation_messages` | User/assistant messages + metadata (`testFlow`, etc.) |
-| `generated_tests` | Playwright code after flow approval |
+| `conversations` | One row per chat. `summary` is JSON: `{ "case", "plans": [{ "id", "title" }] }` |
+| `conversation_messages` | User and assistant text. Assistant metadata may include `cdpStepsId` |
+| `cdp_plans` | One saved CDP plan per generation (`steps` jsonb). Run Test loads this row |
+| `generated_tests` | Unused by the current chat flow |
 
 The Backend connects with the **service role key**, which bypasses Row Level Security. No RLS policies are required for Tursor's server-side usage.
 
@@ -65,7 +66,7 @@ SQL Editor:
 select table_name
 from information_schema.tables
 where table_schema = 'public'
-  and table_name in ('conversations', 'conversation_messages', 'generated_tests');
+  and table_name in ('conversations', 'conversation_messages', 'cdp_plans', 'generated_tests');
 ```
 
 ---

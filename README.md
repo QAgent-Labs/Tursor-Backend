@@ -1,98 +1,74 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Tursor Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Node server on port **9090**. It keeps the chat, stores CDP plans, and runs them in a browser. Tursor-AI does the model work. The extension only sees text and an optional plan id.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+## Run
 
 ```bash
-$ npm install
+npm install
+npm run start
 ```
 
-## Compile and run the project
+Tursor-AI must be up on port **8000** (`tursorAI start`).
 
-```bash
-# development
-$ npm run start
+Workspace config is `{workspace}/.tursor/config.json` (`ai` and `supabase`). Chat tables: `scripts/supabase-chat-schema.sql`. If the project was created before CDP plans, run that file again so `cdp_plans` exists.
 
-# watch mode
-$ npm run start:dev
+## Flow
 
-# production mode
-$ npm run start:prod
+```text
+Extension
+  |  POST /chat/intro
+  |  POST /chat/message     { conversationId, message, workspacePath }
+  v
+Backend :9090
+  |  summary { case, plans[] } + the new user message
+  |  latest plan's full steps, when one exists
+  v
+Tursor-AI :8000   POST /v1/chat/completion
+  |  { reply, case, cdp_steps | null }
+  v
+Backend
+  |  saves the reply
+  |  if cdp_steps: new row in cdp_plans, id stored on that message
+  v
+Extension   { conversationId, reply, cdpStepsId }
+
+Run Test
+  Extension  POST /chat/run  { cdpStepsId }
+  Backend    loads that row and runs those steps (logs and screenshots over the socket)
 ```
 
-## Run tests
+The model does not receive the full transcript. After every reply the backend stores:
 
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+```json
+{
+  "case": "what the user is trying to test, including corrections",
+  "plans": [{ "id": "uuid", "title": "Navigate to home page" }]
+}
 ```
 
-## Deployment
+`case` is the narrative. `plans` lists every plan created in the conversation. The prompt includes the newest plan's steps in full so a follow-up can revise them. A revision is a new row. Older **Run Test** buttons still run the plan from that message.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## What the extension gets
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+```json
+{
+  "conversationId": "uuid",
+  "reply": "Created the login steps.",
+  "cdpStepsId": "uuid"
+}
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+`cdpStepsId` is `null` when the reply is only an explanation. General questions get text, and the model asks before creating steps. Steps are created in that same turn when the user says yes, or asks to create the steps or start the test.
 
-## Resources
+## HTTP
 
-Check out a few resources that may come in handy when working with NestJS:
+| Method | Path | Body |
+|---|---|---|
+| `POST` | `/chat/intro` | `{ "workspacePath" }` |
+| `POST` | `/chat/message` | `{ "conversationId", "message", "workspacePath" }` |
+| `POST` | `/chat/run` | `{ "cdpStepsId" }` |
+| `GET` | `/chat/conversations/:id` | stored messages |
+| `GET` | `/health` | liveness |
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+`POST /chat/run` returns `{ "ok": true, "cdpStepsId" }` and starts the browser run on the connected frontend port. The Play button on the Run page still runs the built-in demo plan.

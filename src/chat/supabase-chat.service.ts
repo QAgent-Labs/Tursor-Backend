@@ -1,14 +1,13 @@
 import { createLogger } from '../lib/logger';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { WorkspaceSupabaseDatabaseConfig } from '../context/workspace-config.types';
+import type { CdpStepDefinition } from '../cdp/cdp-step.types';
 import type {
   ChatMessageDto,
   ConversationDto,
   ConversationStatus,
-  GeneratedTestDto,
   MessageRole,
   MessageType,
-  TestFlowStep,
 } from './chat.types';
 
 type ConversationRow = {
@@ -31,18 +30,13 @@ type MessageRow = {
   created_at: string;
 };
 
-type GeneratedTestRow = {
+type CdpPlanRow = {
   id: string;
   conversation_id: string;
   workspace_path: string;
-  test_name: string | null;
-  language: string;
-  framework: string;
-  code: string;
-  version: number;
-  status: string;
+  title: string | null;
+  steps: CdpStepDefinition[] | null;
   created_at: string;
-  updated_at: string;
 };
 
 export class SupabaseChatService {
@@ -95,6 +89,22 @@ export class SupabaseChatService {
       );
     }
     return this.mapConversation(data as ConversationRow);
+  }
+
+  async listConversations(
+    database: WorkspaceSupabaseDatabaseConfig,
+    workspacePath: string,
+  ): Promise<ConversationDto[]> {
+    const { data, error } = await this.table(database, 'conversations')
+      .select('*')
+      .eq('workspace_path', workspacePath)
+      .order('updated_at', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      throw new Error(`Supabase listConversations failed: ${error.message}`);
+    }
+    return (data as ConversationRow[]).map((row) => this.mapConversation(row));
   }
 
   async getConversation(
@@ -188,70 +198,78 @@ export class SupabaseChatService {
     return (data as MessageRow[]).map((row) => this.mapMessage(row));
   }
 
-  async saveGeneratedTest(
+  async updateSummary(
+    database: WorkspaceSupabaseDatabaseConfig,
+    conversationId: string,
+    summary: string,
+  ): Promise<void> {
+    const { error } = await this.table(database, 'conversations')
+      .update({
+        summary,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', conversationId);
+
+    if (error) {
+      throw new Error(`Supabase updateSummary failed: ${error.message}`);
+    }
+  }
+
+  async saveCdpPlan(
     database: WorkspaceSupabaseDatabaseConfig,
     input: {
       conversationId: string;
       workspacePath: string;
-      testName: string | null;
-      language: string;
-      framework: string;
-      code: string;
+      title: string;
+      steps: CdpStepDefinition[];
     },
-  ): Promise<GeneratedTestDto> {
-    const { data, error } = await this.table(database, 'generated_tests')
+  ): Promise<{ id: string; title: string }> {
+    const { data, error } = await this.table(database, 'cdp_plans')
       .insert({
         conversation_id: input.conversationId,
         workspace_path: input.workspacePath,
-        test_name: input.testName,
-        language: input.language,
-        framework: input.framework,
-        code: input.code,
-        status: 'generated',
+        title: input.title,
+        steps: input.steps,
       })
-      .select('*')
+      .select('id, title')
       .single();
 
     if (error || !data) {
-      throw new Error(`Supabase saveGeneratedTest failed: ${error?.message}`);
+      throw new Error(`Supabase saveCdpPlan failed: ${error?.message}`);
     }
-    return this.mapGeneratedTest(data as GeneratedTestRow);
+    const row = data as { id: string; title: string | null };
+    return { id: row.id, title: row.title ?? input.title };
   }
 
-  async getLatestGeneratedTest(
+  async getCdpPlan(
     database: WorkspaceSupabaseDatabaseConfig,
-    conversationId: string,
-  ): Promise<GeneratedTestDto | null> {
-    const { data, error } = await this.table(database, 'generated_tests')
+    planId: string,
+  ): Promise<{
+    id: string;
+    conversationId: string;
+    workspacePath: string;
+    title: string;
+    steps: CdpStepDefinition[];
+  } | null> {
+    const { data, error } = await this.table(database, 'cdp_plans')
       .select('*')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: false })
-      .limit(1)
+      .eq('id', planId)
       .maybeSingle();
 
     if (error) {
-      throw new Error(
-        `Supabase getLatestGeneratedTest failed: ${error.message}`,
-      );
+      throw new Error(`Supabase getCdpPlan failed: ${error.message}`);
     }
     if (!data) {
       return null;
     }
-    return this.mapGeneratedTest(data as GeneratedTestRow);
-  }
-
-  extractApprovedTestFlow(messages: ChatMessageDto[]): TestFlowStep[] | null {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const msg = messages[i];
-      if (msg.messageType !== 'test_proposal') {
-        continue;
-      }
-      const flow = msg.metadata?.testFlow;
-      if (Array.isArray(flow) && flow.length > 0) {
-        return flow as TestFlowStep[];
-      }
-    }
-    return null;
+    const row = data as CdpPlanRow;
+    return {
+      id: row.id,
+      conversationId: row.conversation_id,
+      workspacePath: row.workspace_path,
+      title: row.title ?? '',
+      steps: Array.isArray(row.steps) ? row.steps : [],
+    };
   }
 
   private mapConversation(row: ConversationRow): ConversationDto {
@@ -277,18 +295,4 @@ export class SupabaseChatService {
     };
   }
 
-  private mapGeneratedTest(row: GeneratedTestRow): GeneratedTestDto {
-    return {
-      id: row.id,
-      conversationId: row.conversation_id,
-      workspacePath: row.workspace_path,
-      testName: row.test_name,
-      language: row.language,
-      framework: row.framework,
-      code: row.code,
-      version: row.version,
-      status: row.status,
-      createdAt: row.created_at,
-    };
-  }
 }

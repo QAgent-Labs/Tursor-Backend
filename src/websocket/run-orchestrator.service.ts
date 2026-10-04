@@ -6,7 +6,7 @@ import { CdpRunnerService } from '../cdp/cdp-runner.service';
 import { WorkspaceConfigValidator } from '../context/workspace-config.validator';
 import type { WorkspaceSupabaseConfig } from '../context/workspace-config.types';
 import { WebsocketGateway } from './websocket.gateway';
-import type { CdpRunCallbacks } from '../cdp/cdp-step.types';
+import type { CdpRunCallbacks, CdpStepDefinition } from '../cdp/cdp-step.types';
 
 export class RunOrchestratorService {
   private readonly logger = createLogger('RunOrchestratorService');
@@ -253,8 +253,8 @@ export class RunOrchestratorService {
     }
   }
 
-  /** Run Playwright demo steps against the session frontend port. */
-  async startCdpRun(): Promise<void> {
+  /** Run stored CDP steps, or the demo plan when none are passed. */
+  async startCdpRun(steps?: CdpStepDefinition[]): Promise<void> {
     if (this.cdpRunning) {
       this.gateway.emitRunLog({
         category: 'cdp',
@@ -310,7 +310,9 @@ export class RunOrchestratorService {
       this.gateway.emitRunLog({
         category: 'cdp',
         level: 'info',
-        message: `Launching browser and running demo steps on ${baseUrl}…`,
+        message: steps
+          ? `Launching browser and running saved CDP plan (${steps.length} steps) on ${baseUrl}…`
+          : `Launching browser and running demo steps on ${baseUrl}…`,
         meta: { frontendPort, baseUrl },
       });
 
@@ -319,6 +321,7 @@ export class RunOrchestratorService {
         workspacePath,
         validated.supabase.bucket,
         this.cdpCallbacks(),
+        steps,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

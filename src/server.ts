@@ -24,8 +24,8 @@ const swaggerDocument = {
     '/context/update': { post: { summary: 'Queue incremental embed' } },
     '/chat/intro': { post: { summary: 'Start chat conversation' } },
     '/chat/message': { post: { summary: 'Send chat message' } },
-    '/chat/approve-test-flow': { post: { summary: 'Approve test flow' } },
-    '/chat/approve-execution': { post: { summary: 'Approve test execution' } },
+    '/chat/run': { post: { summary: 'Run a saved CDP plan' } },
+    '/chat/conversations': { get: { summary: 'List conversations' } },
     '/chat/conversations/{id}': { get: { summary: 'Get conversation' } },
   },
 };
