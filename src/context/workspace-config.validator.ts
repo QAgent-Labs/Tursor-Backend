@@ -1,4 +1,3 @@
-import { Injectable } from '@nestjs/common';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type {
@@ -157,7 +156,6 @@ function parseSupabaseSection(
   return { ok: true, supabase: { bucket, database } };
 }
 
-@Injectable()
 export class WorkspaceConfigValidator {
   validate(workspacePath: string): WorkspaceConfigValidation {
     const root = path.resolve(workspacePath);

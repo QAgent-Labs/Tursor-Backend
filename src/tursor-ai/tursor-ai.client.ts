@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { createLogger } from '../lib/logger';
 import { TursorAiRuntimeService } from './tursor-ai-runtime.service';
 
 export type TursorAiEmbedResult = {
@@ -49,9 +49,8 @@ export type TursorAiChatResult = {
   retrieved_chunk_count?: number;
 };
 
-@Injectable()
 export class TursorAiClient {
-  private readonly logger = new Logger(TursorAiClient.name);
+  private readonly logger = createLogger('TursorAiClient');
 
   constructor(private readonly runtime: TursorAiRuntimeService) {}
 

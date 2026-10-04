@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { createLogger } from '../lib/logger';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { WorkspaceSupabaseDatabaseConfig } from '../context/workspace-config.types';
 import type {
@@ -45,9 +45,8 @@ type GeneratedTestRow = {
   updated_at: string;
 };
 
-@Injectable()
 export class SupabaseChatService {
-  private readonly logger = new Logger(SupabaseChatService.name);
+  private readonly logger = createLogger('SupabaseChatService');
   private readonly clientCache = new Map<string, SupabaseClient>();
 
   private getClient(database: WorkspaceSupabaseDatabaseConfig): SupabaseClient {

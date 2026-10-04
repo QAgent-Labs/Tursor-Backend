@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { chromium, type Page } from 'playwright';
+import '../lib/playwright-env';
+import { config } from '../lib/config';
+import { createLogger } from '../lib/logger';
+import type { Page } from 'playwright';
 import {
   type CdpRunCallbacks,
   type CdpAction,
@@ -17,12 +18,10 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-@Injectable()
 export class CdpRunnerService {
-  private readonly logger = new Logger(CdpRunnerService.name);
+  private readonly logger = createLogger('CdpRunnerService');
 
   constructor(
-    private readonly configService: ConfigService,
     private readonly screenshotStorage: ScreenshotStorageService,
     private readonly supabaseScreenshots: SupabaseScreenshotService,
   ) {}
@@ -35,11 +34,9 @@ export class CdpRunnerService {
   ): Promise<void> {
     const baseUrl = `http://127.0.0.1:${frontendPort}`;
     const steps = demoCdpSteps();
-    const headless = this.configService.get<string>('CDP_HEADLESS') === 'true';
-    const slowMo = Number(this.configService.get<string>('CDP_SLOW_MO') ?? 0);
-    const stepDelayMs = Number(
-      this.configService.get<string>('CDP_STEP_DELAY_MS') ?? 1000,
-    );
+    const headless = config.cdpHeadless;
+    const slowMo = config.cdpSlowMo;
+    const stepDelayMs = config.cdpStepDelayMs;
 
     if (!this.supabaseScreenshots.isConfigured(bucketConfig)) {
       const message = this.supabaseScreenshots.missingConfigMessage();
@@ -59,11 +56,18 @@ export class CdpRunnerService {
     callbacks.onLog('run', `Total demo steps: ${steps.length}`);
     callbacks.onLog('run', 'Screenshot storage: Supabase (public URLs).');
 
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+    let browser: Awaited<
+      ReturnType<(typeof import('playwright'))['chromium']['launch']>
+    > | null = null;
 
     try {
+      const { chromium } = await import('playwright');
       callbacks.onLog('run', 'Launching Chromium…');
-      browser = await chromium.launch({ headless, slowMo });
+      browser = await chromium.launch({
+        headless,
+        slowMo,
+        args: ['--disable-crash-reporter'],
+      });
       const context = await browser.newContext({
         viewport: { width: 1280, height: 720 },
       });
