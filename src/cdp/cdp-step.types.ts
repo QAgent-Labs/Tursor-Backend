@@ -42,10 +42,11 @@ export type CdpStepDefinition = {
 };
 
 export type CdpRunCallbacks = {
+  onRunStart?: (runId: string) => void;
   onStep: (stepId: string, label: string) => void;
   onLog: (stepId: string, message: string) => void;
   onScreenshot: (stepId: string, url: string) => void;
-  onComplete: (status: 'success' | 'fail') => void;
+  onComplete: (status: 'success' | 'fail', message: string) => void;
 };
 
 /** Mock plan — Atelier Canvas demo (Home → Login → Done → Browse category). */

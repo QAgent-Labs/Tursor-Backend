@@ -48,6 +48,7 @@ export class CdpRunnerService {
     const { runId, dir } =
       this.screenshotStorage.createRunDirectory(workspacePath);
     this.screenshotStorage.registerRunLocation(runId, dir);
+    callbacks.onRunStart?.(runId);
 
     callbacks.onLog(
       'run',
@@ -60,6 +61,7 @@ export class CdpRunnerService {
     let browser: Awaited<
       ReturnType<(typeof import('playwright'))['chromium']['launch']>
     > | null = null;
+    let activeStep = '';
 
     try {
       const { chromium } = await import('playwright');
@@ -80,6 +82,7 @@ export class CdpRunnerService {
 
       for (let i = 0; i < steps.length; i += 1) {
         const step = steps[i];
+        activeStep = `${step.label} (${step.id})`;
         callbacks.onStep(step.id, step.label);
         callbacks.onLog(
           step.id,
@@ -121,13 +124,16 @@ export class CdpRunnerService {
       }
 
       callbacks.onLog('run', 'CDP flow finished successfully.');
-      callbacks.onComplete('success');
+      callbacks.onComplete('success', 'CDP flow finished successfully.');
       this.logger.log(`CDP run ${runId} completed for ${baseUrl}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`CDP run failed: ${message}`);
-      callbacks.onLog('run', `CDP run failed: ${message}`);
-      callbacks.onComplete('fail');
+      const reason = activeStep
+        ? `Step "${activeStep}" failed: ${message}`
+        : message;
+      this.logger.error(`CDP run failed: ${reason}`);
+      callbacks.onLog('run', `CDP run failed: ${reason}`);
+      callbacks.onComplete('fail', reason);
     } finally {
       if (browser) {
         callbacks.onLog('run', 'Closing Chromium browser…');

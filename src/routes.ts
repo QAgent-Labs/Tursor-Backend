@@ -94,7 +94,13 @@ export function createRoutes(app: AppContainer): Router {
     asyncHandler(async (req, res) => {
       const cdpStepsId =
         typeof req.body?.cdpStepsId === 'string' ? req.body.cdpStepsId : '';
-      res.json(await app.chatOrchestrator.runCdpPlan(cdpStepsId));
+      const conversationId =
+        typeof req.body?.conversationId === 'string'
+          ? req.body.conversationId
+          : '';
+      res.json(
+        await app.chatOrchestrator.runCdpPlan(cdpStepsId, conversationId),
+      );
     }),
   );
 

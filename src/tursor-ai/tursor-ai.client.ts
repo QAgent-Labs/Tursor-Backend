@@ -30,13 +30,20 @@ export type TursorAiChatRequest = {
   api_key: string;
   mode?: 'chat' | 'intro';
   case?: string;
+  brief_summary?: string;
   plans?: Array<{ id: string; title: string }>;
+  cdp_runs?: Array<{
+    cdp_step_id: string;
+    status: 'passed' | 'failure';
+    status_message: string;
+  }>;
   latest_cdp_steps?: CdpStepDefinition[] | null;
 };
 
 export type TursorAiChatResult = {
   reply: string;
   case?: string;
+  brief_summary?: string;
   cdp_steps?: CdpStepDefinition[] | null;
   retrieved_chunk_count?: number;
 };

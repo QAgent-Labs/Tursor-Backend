@@ -8,12 +8,34 @@ import type { WorkspaceSupabaseConfig } from '../context/workspace-config.types'
 import { WebsocketGateway } from './websocket.gateway';
 import type { CdpRunCallbacks, CdpStepDefinition } from '../cdp/cdp-step.types';
 
+function compactStatusMessage(message: string): string {
+  const text = message
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  if (!text) {
+    return '';
+  }
+  return text.length > 800 ? `${text.slice(0, 799)}…` : text;
+}
+
 export class RunOrchestratorService {
   private readonly logger = createLogger('RunOrchestratorService');
   private building = false;
   private cdpRunning = false;
   private embedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingEmbedPath: string | null = null;
+  private recordCdpRun:
+    | ((
+        conversationId: string,
+        cdpStepId: string,
+        status: 'passed' | 'failure',
+        statusMessage: string,
+        screenshots: string[],
+      ) => Promise<void>)
+    | null = null;
 
   constructor(
     private readonly contextService: ContextService,
@@ -23,6 +45,18 @@ export class RunOrchestratorService {
     private readonly cdpRunner: CdpRunnerService,
     private readonly gateway: WebsocketGateway,
   ) {}
+
+  setCdpRunRecorder(
+    recorder: (
+      conversationId: string,
+      cdpStepId: string,
+      status: 'passed' | 'failure',
+      statusMessage: string,
+      screenshots: string[],
+    ) => Promise<void>,
+  ): void {
+    this.recordCdpRun = recorder;
+  }
 
   validateOnly(): { ok: boolean; error?: string } {
     const path = this.contextService.getWorkspacePath();
@@ -78,12 +112,39 @@ export class RunOrchestratorService {
     }, 1500);
   }
 
-  private cdpCallbacks(): CdpRunCallbacks {
+  private cdpCallbacks(
+    conversationId: string | null,
+    cdpStepId: string | null,
+  ): CdpRunCallbacks {
+    let recorded = false;
+    const screenshots: string[] = [];
     return {
+      onRunStart: (runId) => this.gateway.sendCdpStarted(runId, conversationId),
       onStep: (stepId, label) => this.gateway.sendStepUpdate(stepId, label),
       onLog: (stepId, message) => this.gateway.sendLog(stepId, message, 'cdp'),
-      onScreenshot: (stepId, url) => this.gateway.sendScreenshot(stepId, url),
-      onComplete: (status) => this.gateway.sendComplete(status),
+      onScreenshot: (stepId, url) => {
+        if (url) {
+          screenshots.push(url);
+        }
+        this.gateway.sendScreenshot(stepId, url);
+      },
+      onComplete: (status, message) => {
+        this.gateway.sendComplete(status);
+        if (recorded || !conversationId || !cdpStepId || !this.recordCdpRun) {
+          return;
+        }
+        recorded = true;
+        void this.recordCdpRun(
+          conversationId,
+          cdpStepId,
+          status === 'success' ? 'passed' : 'failure',
+          compactStatusMessage(message),
+          [...screenshots],
+        ).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.error(`Could not record CDP run: ${message}`);
+        });
+      },
     };
   }
 
@@ -254,7 +315,11 @@ export class RunOrchestratorService {
   }
 
   /** Run stored CDP steps, or the demo plan when none are passed. */
-  async startCdpRun(steps?: CdpStepDefinition[]): Promise<void> {
+  async startCdpRun(
+    steps?: CdpStepDefinition[],
+    conversationId?: string | null,
+    cdpStepId?: string | null,
+  ): Promise<void> {
     if (this.cdpRunning) {
       this.gateway.emitRunLog({
         category: 'cdp',
@@ -320,7 +385,7 @@ export class RunOrchestratorService {
         frontendPort,
         workspacePath,
         validated.supabase.bucket,
-        this.cdpCallbacks(),
+        this.cdpCallbacks(conversationId ?? null, cdpStepId ?? null),
         steps,
       );
     } catch (err) {

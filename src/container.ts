@@ -55,6 +55,16 @@ export function createContainer(): AppContainer {
     tursorAiRuntime,
     runOrchestrator,
   );
+  runOrchestrator.setCdpRunRecorder(
+    (conversationId, cdpStepId, status, statusMessage, screenshots) =>
+      chatOrchestrator.recordCdpRun(
+        conversationId,
+        cdpStepId,
+        status,
+        statusMessage,
+        screenshots,
+      ),
+  );
 
   return {
     contextService,

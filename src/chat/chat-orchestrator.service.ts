@@ -11,6 +11,8 @@ import { TursorAiClient } from '../tursor-ai/tursor-ai.client';
 import { TursorAiRuntimeService } from '../tursor-ai/tursor-ai-runtime.service';
 import { RunOrchestratorService } from '../websocket/run-orchestrator.service';
 import type {
+  CdpRunRecord,
+  CdpRunStatus,
   ChatTurnResponse,
   ConversationDto,
   ConversationListItem,
@@ -24,16 +26,60 @@ type WorkspaceBundle = {
   ai: WorkspaceAiConfig;
 };
 
+function emptySummary(): ConversationSummary {
+  return { case: '', brief_summary: '', plans: [], cdp_runs: [] };
+}
+
+function parseScreenshots(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter((item): item is string => typeof item === 'string' && item.length > 0);
+}
+
+function parseCdpRuns(raw: unknown): CdpRunRecord[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== 'object') {
+      return [];
+    }
+    const run = item as {
+      cdp_step_id?: unknown;
+      status?: unknown;
+      status_message?: unknown;
+      screenshots?: unknown;
+    };
+    if (typeof run.cdp_step_id !== 'string' || !run.cdp_step_id) {
+      return [];
+    }
+    if (run.status !== 'passed' && run.status !== 'failure') {
+      return [];
+    }
+    return [
+      {
+        cdp_step_id: run.cdp_step_id,
+        status: run.status,
+        status_message:
+          typeof run.status_message === 'string' ? run.status_message : '',
+        screenshots: parseScreenshots(run.screenshots),
+      },
+    ];
+  });
+}
+
 function parseSummary(raw: string): ConversationSummary {
-  const empty: ConversationSummary = { case: '', plans: [] };
   const text = raw.trim();
   if (!text) {
-    return empty;
+    return emptySummary();
   }
   try {
     const data = JSON.parse(text) as {
       case?: unknown;
+      brief_summary?: unknown;
       plans?: unknown;
+      cdp_runs?: unknown;
     };
     const plans = Array.isArray(data.plans)
       ? data.plans.flatMap((item) => {
@@ -54,10 +100,13 @@ function parseSummary(raw: string): ConversationSummary {
       : [];
     return {
       case: typeof data.case === 'string' ? data.case : text,
+      brief_summary:
+        typeof data.brief_summary === 'string' ? data.brief_summary : '',
       plans,
+      cdp_runs: parseCdpRuns(data.cdp_runs),
     };
   } catch {
-    return { case: text, plans: [] };
+    return { ...emptySummary(), case: text };
   }
 }
 
@@ -158,7 +207,12 @@ export class ChatOrchestratorService {
       mode: 'intro' | 'chat';
       conversation: ConversationDto;
     },
-  ): Promise<{ reply: string; case: string; steps: CdpStepDefinition[] | null }> {
+  ): Promise<{
+    reply: string;
+    case: string;
+    brief_summary: string;
+    steps: CdpStepDefinition[] | null;
+  }> {
     await this.ensureTursorAiReady();
     const summary = parseSummary(input.conversation.summary);
     const latestPlan = summary.plans[summary.plans.length - 1];
@@ -178,13 +232,20 @@ export class ChatOrchestratorService {
       api_key: bundle.ai.apiKey,
       mode: input.mode,
       case: summary.case,
+      brief_summary: summary.brief_summary,
       plans: summary.plans,
+      cdp_runs: summary.cdp_runs.map((run) => ({
+        cdp_step_id: run.cdp_step_id,
+        status: run.status,
+        status_message: run.status_message,
+      })),
       latest_cdp_steps: latestSteps,
     });
 
     return {
       reply: result.reply || 'Something went wrong.',
       case: result.case || summary.case,
+      brief_summary: result.brief_summary || summary.brief_summary,
       steps: asCdpSteps(result.cdp_steps),
     };
   }
@@ -203,7 +264,12 @@ export class ChatOrchestratorService {
       conversation,
     });
 
-    const summary: ConversationSummary = { case: ai.case, plans: [] };
+    const summary: ConversationSummary = {
+      case: ai.case,
+      brief_summary: ai.brief_summary,
+      plans: [],
+      cdp_runs: [],
+    };
     await this.supabaseChat.updateSummary(
       bundle.supabase.database,
       conversation.id,
@@ -289,7 +355,17 @@ export class ChatOrchestratorService {
       plans.push({ id: saved.id, title: saved.title });
     }
 
-    const summary: ConversationSummary = { case: ai.case, plans };
+    const latest = await this.supabaseChat.getConversation(
+      bundle.supabase.database,
+      conversationId,
+    );
+    const stored = parseSummary(latest?.summary ?? conversation.summary);
+    const summary: ConversationSummary = {
+      case: ai.case,
+      brief_summary: ai.brief_summary || stored.brief_summary,
+      plans,
+      cdp_runs: stored.cdp_runs,
+    };
     await this.supabaseChat.updateSummary(
       bundle.supabase.database,
       conversationId,
@@ -331,10 +407,17 @@ export class ChatOrchestratorService {
     };
   }
 
-  async runCdpPlan(cdpStepsId: string): Promise<{ ok: true; cdpStepsId: string }> {
+  async runCdpPlan(
+    cdpStepsId: string,
+    conversationId: string,
+  ): Promise<{ ok: true; cdpStepsId: string }> {
     const id = cdpStepsId?.trim();
+    const conversation = conversationId?.trim();
     if (!id) {
       throw new BadRequestError('cdpStepsId is required');
+    }
+    if (!conversation) {
+      throw new BadRequestError('conversationId is required');
     }
     const workspacePath = this.resolveWorkspace();
     const bundle = this.loadWorkspaceBundle(workspacePath);
@@ -345,13 +428,54 @@ export class ChatOrchestratorService {
     if (!plan || plan.workspacePath !== workspacePath) {
       throw new NotFoundError(`CDP plan ${id} not found`);
     }
+    if (plan.conversationId !== conversation) {
+      throw new BadRequestError(
+        'CDP plan belongs to a different conversation.',
+      );
+    }
     if (!plan.steps.length) {
       throw new BadRequestError('CDP plan has no steps');
     }
 
-    void this.runOrchestrator.startCdpRun(plan.steps);
+    void this.runOrchestrator.startCdpRun(plan.steps, conversation, id);
     this.logger.log(`Started CDP plan ${id} (${plan.steps.length} steps)`);
     return { ok: true, cdpStepsId: id };
+  }
+
+  async recordCdpRun(
+    conversationId: string,
+    cdpStepId: string,
+    status: CdpRunStatus,
+    statusMessage = '',
+    screenshots: string[] = [],
+  ): Promise<void> {
+    const workspacePath = this.contextService.getWorkspacePath()?.trim();
+    if (!workspacePath || !conversationId || !cdpStepId) {
+      return;
+    }
+    const bundle = this.loadWorkspaceBundle(workspacePath);
+    const conversation = await this.supabaseChat.getConversation(
+      bundle.supabase.database,
+      conversationId,
+    );
+    if (!conversation || conversation.workspacePath !== workspacePath) {
+      return;
+    }
+    const summary = parseSummary(conversation.summary);
+    summary.cdp_runs.push({
+      cdp_step_id: cdpStepId,
+      status,
+      status_message: statusMessage.trim(),
+      screenshots,
+    });
+    await this.supabaseChat.updateSummary(
+      bundle.supabase.database,
+      conversationId,
+      JSON.stringify(summary),
+    );
+    this.logger.log(
+      `Recorded CDP run ${cdpStepId} as ${status} on ${conversationId}`,
+    );
   }
 
   async getConversation(conversationId: string): Promise<{

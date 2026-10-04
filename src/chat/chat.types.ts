@@ -35,9 +35,20 @@ export type SummaryPlan = {
   title: string;
 };
 
+export type CdpRunStatus = 'passed' | 'failure';
+
+export type CdpRunRecord = {
+  cdp_step_id: string;
+  status: CdpRunStatus;
+  status_message: string;
+  screenshots: string[];
+};
+
 export type ConversationSummary = {
   case: string;
+  brief_summary: string;
   plans: SummaryPlan[];
+  cdp_runs: CdpRunRecord[];
 };
 
 export type ChatTurnResponse = {

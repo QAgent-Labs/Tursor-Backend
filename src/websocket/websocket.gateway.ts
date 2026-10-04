@@ -14,6 +14,7 @@ export type OutboundSocketEvent =
   | { type: 'step_result'; stepId: string; status: 'success' | 'fail' }
   | RunLogSocketEvent
   | { type: 'screenshot'; stepId: string; url: string }
+  | { type: 'cdp_started'; runId: string; conversationId: string | null }
   | { type: 'complete'; status: 'success' | 'fail' }
   | { type: 'context_building' }
   | { type: 'context_ready' }
@@ -312,6 +313,16 @@ export class WebsocketGateway {
       level: message.toLowerCase().includes('failed') ? 'error' : 'info',
       message,
       stepId,
+    });
+  }
+
+  sendCdpStarted(runId: string, conversationId: string | null): void {
+    this.emit({ type: 'cdp_started', runId, conversationId });
+    this.emitRunLog({
+      category: 'cdp',
+      level: 'info',
+      message: `CDP run ${runId} is streaming screenshots.`,
+      meta: { runId, conversationId },
     });
   }
 
