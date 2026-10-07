@@ -129,21 +129,25 @@ export class RunOrchestratorService {
         this.gateway.sendScreenshot(stepId, url);
       },
       onComplete: (status, message) => {
-        this.gateway.sendComplete(status);
-        if (recorded || !conversationId || !cdpStepId || !this.recordCdpRun) {
-          return;
-        }
-        recorded = true;
-        void this.recordCdpRun(
-          conversationId,
-          cdpStepId,
-          status === 'success' ? 'passed' : 'failure',
-          compactStatusMessage(message),
-          [...screenshots],
-        ).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          this.logger.error(`Could not record CDP run: ${message}`);
-        });
+        const finish = async () => {
+          if (!recorded && conversationId && cdpStepId && this.recordCdpRun) {
+            recorded = true;
+            try {
+              await this.recordCdpRun(
+                conversationId,
+                cdpStepId,
+                status === 'success' ? 'passed' : 'failure',
+                compactStatusMessage(message),
+                [...screenshots],
+              );
+            } catch (err: unknown) {
+              const detail = err instanceof Error ? err.message : String(err);
+              this.logger.error(`Could not record CDP run: ${detail}`);
+            }
+          }
+          this.gateway.sendComplete(status);
+        };
+        void finish();
       },
     };
   }

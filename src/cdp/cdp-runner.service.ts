@@ -19,6 +19,21 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+type EarlyTextWait = {
+  text: string;
+  promise: Promise<void>;
+};
+
+function leadingTextWaits(step: CdpStepDefinition | undefined): CdpAction[] {
+  if (!step) return [];
+  const waits: CdpAction[] = [];
+  for (const action of step.actions) {
+    if (action.type !== 'waitForText') break;
+    waits.push(action);
+  }
+  return waits;
+}
+
 export class CdpRunnerService {
   private readonly logger = createLogger('CdpRunnerService');
 
@@ -62,6 +77,7 @@ export class CdpRunnerService {
       ReturnType<(typeof import('playwright'))['chromium']['launch']>
     > | null = null;
     let activeStep = '';
+    const earlyTextWaits: EarlyTextWait[] = [];
 
     try {
       const { chromium } = await import('playwright');
@@ -92,10 +108,25 @@ export class CdpRunnerService {
         for (const action of step.actions) {
           const actionDesc = describeAction(action, baseUrl);
           callbacks.onLog(step.id, `Executing: ${actionDesc}`);
-          await this.executeAction(page, action, baseUrl, (msg) =>
-            callbacks.onLog(step.id, msg),
+          await this.executeAction(
+            page,
+            action,
+            baseUrl,
+            (msg) => callbacks.onLog(step.id, msg),
+            earlyTextWaits,
           );
           callbacks.onLog(step.id, `Completed: ${actionDesc}`);
+        }
+
+        for (const action of leadingTextWaits(steps[i + 1])) {
+          if (action.type !== 'waitForText') continue;
+          const promise = this.waitForVisibleText(page, action);
+          void promise.catch(() => undefined);
+          earlyTextWaits.push({ text: action.text, promise });
+          callbacks.onLog(
+            step.id,
+            `Watching for "${action.text}" before the pause, so a short-lived label is not missed.`,
+          );
         }
 
         callbacks.onLog(step.id, 'Capturing screenshot…');
@@ -143,11 +174,32 @@ export class CdpRunnerService {
     }
   }
 
+  private waitForVisibleText(
+    page: Page,
+    action: Extract<CdpAction, { type: 'waitForText' }>,
+  ): Promise<void> {
+    return page
+      .getByText(action.text, { exact: false })
+      .first()
+      .waitFor({
+        state: 'visible',
+        timeout: action.timeoutMs ?? 15_000,
+      });
+  }
+
+  private takeEarlyTextWait(waits: EarlyTextWait[], text: string): Promise<void> | null {
+    const index = waits.findIndex((item) => item.text === text);
+    if (index === -1) return null;
+    const [item] = waits.splice(index, 1);
+    return item?.promise ?? null;
+  }
+
   private async executeAction(
     page: Page,
     action: CdpAction,
     baseUrl: string,
     onDetail: (message: string) => void,
+    earlyTextWaits: EarlyTextWait[],
   ): Promise<void> {
     switch (action.type) {
       case 'navigate': {
@@ -177,17 +229,17 @@ export class CdpRunnerService {
         await this.fillFirstMatch(page, action.selectors, action.value);
         onDetail('Fill action completed.');
         return;
-      case 'waitForText':
-        onDetail(`Waiting for visible text "${action.text}"…`);
-        await page
-          .getByText(action.text, { exact: false })
-          .first()
-          .waitFor({
-            state: 'visible',
-            timeout: action.timeoutMs ?? 15_000,
-          });
+      case 'waitForText': {
+        const early = this.takeEarlyTextWait(earlyTextWaits, action.text);
+        onDetail(
+          early
+            ? `Waiting for visible text "${action.text}" (watch started before the previous pause)…`
+            : `Waiting for visible text "${action.text}"…`,
+        );
+        await (early ?? this.waitForVisibleText(page, action));
         onDetail(`Text "${action.text}" is visible.`);
         return;
+      }
       case 'waitForPath': {
         const fragment = action.pathIncludes;
         const timeout = action.timeoutMs ?? 15_000;

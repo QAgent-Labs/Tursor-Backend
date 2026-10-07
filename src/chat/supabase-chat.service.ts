@@ -152,6 +152,7 @@ export class SupabaseChatService {
   async insertMessage(
     database: WorkspaceSupabaseDatabaseConfig,
     input: {
+      id?: string;
       conversationId: string;
       role: MessageRole;
       content: string;
@@ -159,14 +160,18 @@ export class SupabaseChatService {
       metadata?: Record<string, unknown>;
     },
   ): Promise<ChatMessageDto> {
+    const row: Record<string, unknown> = {
+      conversation_id: input.conversationId,
+      role: input.role,
+      content: input.content,
+      message_type: input.messageType,
+      metadata: input.metadata ?? {},
+    };
+    if (input.id) {
+      row.id = input.id;
+    }
     const { data, error } = await this.table(database, 'conversation_messages')
-      .insert({
-        conversation_id: input.conversationId,
-        role: input.role,
-        content: input.content,
-        message_type: input.messageType,
-        metadata: input.metadata ?? {},
-      })
+      .insert(row)
       .select('*')
       .single();
 

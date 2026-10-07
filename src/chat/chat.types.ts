@@ -30,18 +30,28 @@ export type ConversationDto = {
   updatedAt: string;
 };
 
+export type SuiteCaseKind = 'success' | 'failure' | 'edge';
+
 export type SummaryPlan = {
   id: string;
   title: string;
+  response_id: string;
+  feature: string;
+  kind: SuiteCaseKind | '';
 };
 
 export type CdpRunStatus = 'passed' | 'failure';
 
 export type CdpRunRecord = {
   cdp_step_id: string;
+  case_id: string;
   status: CdpRunStatus;
   status_message: string;
   screenshots: string[];
+  response_id: string;
+  feature: string;
+  title: string;
+  kind: SuiteCaseKind | '';
 };
 
 export type ConversationSummary = {
@@ -51,10 +61,23 @@ export type ConversationSummary = {
   cdp_runs: CdpRunRecord[];
 };
 
+export type ChatSuiteCase = {
+  id: string;
+  kind: SuiteCaseKind;
+  title: string;
+  explanation: string;
+};
+
+export type ChatSuite = {
+  feature: string;
+  cases: ChatSuiteCase[];
+};
+
 export type ChatTurnResponse = {
   conversationId: string;
+  responseId: string;
   reply: string;
-  cdpStepsId: string | null;
+  suite: ChatSuite | null;
   summary: ConversationSummary;
 };
 

@@ -23,7 +23,15 @@ export type TursorAiRagChunk = {
   score: number;
 };
 
+export type TursorAiSuiteCase = {
+  kind: 'success' | 'failure' | 'edge';
+  title: string;
+  explanation?: string;
+  steps: CdpStepDefinition[];
+};
+
 export type TursorAiChatRequest = {
+  conversation_id: string;
   workspace_path: string;
   message: string;
   generation_model: string;
@@ -31,19 +39,46 @@ export type TursorAiChatRequest = {
   mode?: 'chat' | 'intro';
   case?: string;
   brief_summary?: string;
-  plans?: Array<{ id: string; title: string }>;
+  plans?: Array<{
+    id: string;
+    title: string;
+    response_id?: string;
+    feature?: string;
+    kind?: string;
+  }>;
   cdp_runs?: Array<{
     cdp_step_id: string;
     status: 'passed' | 'failure';
     status_message: string;
+    response_id?: string;
+    feature?: string;
+    case_id?: string;
+    title?: string;
+    kind?: string;
   }>;
   latest_cdp_steps?: CdpStepDefinition[] | null;
+  latest_test_suite?: {
+    response_id: string;
+    feature: string;
+    cases: Array<{
+      id: string;
+      kind: string;
+      title: string;
+      steps: CdpStepDefinition[];
+    }>;
+  } | null;
 };
 
 export type TursorAiChatResult = {
+  conversation_id?: string;
+  response_id?: string;
   reply: string;
   case?: string;
   brief_summary?: string;
+  test_suite?: {
+    feature: string;
+    cases: TursorAiSuiteCase[];
+  } | null;
   cdp_steps?: CdpStepDefinition[] | null;
   retrieved_chunk_count?: number;
 };
