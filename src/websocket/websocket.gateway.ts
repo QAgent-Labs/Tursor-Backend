@@ -17,6 +17,7 @@ export type OutboundSocketEvent =
   | { type: 'cdp_started'; runId: string; conversationId: string | null }
   | { type: 'complete'; status: 'success' | 'fail' }
   | { type: 'context_building' }
+  | { type: 'feature_map_building' }
   | { type: 'context_ready' }
   | {
       type: 'context_error';
@@ -344,6 +345,15 @@ export class WebsocketGateway {
       level: status === 'success' ? 'success' : 'error',
       message: `Run finished (${status === 'success' ? 'success' : 'failed'}).`,
       meta: { status },
+    });
+  }
+
+  emitFeatureMapBuilding(): void {
+    this.emit({ type: 'feature_map_building' });
+    this.emitRunLog({
+      category: 'context',
+      level: 'info',
+      message: 'Building the feature map — please wait…',
     });
   }
 

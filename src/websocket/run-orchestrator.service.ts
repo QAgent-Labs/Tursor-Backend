@@ -204,6 +204,37 @@ export class RunOrchestratorService {
     return false;
   }
 
+  private async buildFeatureMap(
+    workspacePath: string,
+    needed: boolean,
+    notify: boolean,
+  ): Promise<void> {
+    if (!needed) {
+      return;
+    }
+    if (notify) {
+      this.gateway.emitFeatureMapBuilding();
+    }
+    try {
+      const result = await this.tursorAi.buildFeatureMap(workspacePath);
+      this.gateway.emitRunLog({
+        category: 'context',
+        level: result.skipped ? 'warn' : 'success',
+        message: result.skipped
+          ? 'Feature map was skipped. Chat will use the code chunks alone.'
+          : `Feature map ready — ${result.features} features.`,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Feature map failed: ${message}`);
+      this.gateway.emitRunLog({
+        category: 'context',
+        level: 'warn',
+        message: `Feature map was not written. Chat will use the code chunks alone. ${message}`,
+      });
+    }
+  }
+
   private async runEmbedPipeline(options?: {
     trigger?: 'initial' | 'file_change' | 'manual';
     changedPath?: string;
@@ -277,6 +308,11 @@ export class RunOrchestratorService {
       });
 
       const embedResult = await this.tursorAi.embed(workspacePath);
+      await this.buildFeatureMap(
+        workspacePath,
+        embedResult.feature_map_needed === true,
+        true,
+      );
 
       this.contextService.markContextReady({
         embeddingsDir: embedResult.embeddings_dir,
@@ -453,6 +489,7 @@ export class RunOrchestratorService {
       }
 
       const embedResult = await this.tursorAi.embed(path);
+      await this.buildFeatureMap(path, embedResult.feature_map_needed === true, false);
       this.contextService.markContextReady({
         embeddingsDir: embedResult.embeddings_dir,
         filesIndexed: embedResult.files_indexed,

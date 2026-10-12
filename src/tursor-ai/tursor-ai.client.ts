@@ -13,6 +13,12 @@ export type TursorAiEmbedResult = {
   files_removed?: number;
   files_unchanged?: number;
   incremental?: boolean;
+  feature_map_needed?: boolean;
+};
+
+export type TursorAiFeatureMapResult = {
+  features: number;
+  skipped: boolean;
 };
 
 export type TursorAiRagChunk = {
@@ -141,6 +147,31 @@ export class TursorAiClient {
     }
 
     return (await res.json()) as TursorAiEmbedResult;
+  }
+
+  async buildFeatureMap(directoryPath: string): Promise<TursorAiFeatureMapResult> {
+    const url = `${this.baseUrl()}/v1/feature-map`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directory_path: directoryPath }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(
+        `Tursor-AI feature map failed HTTP ${res.status}: ${detail.slice(0, 500)}`,
+      );
+    }
+
+    const body = (await res.json()) as {
+      features?: number;
+      skipped?: boolean;
+    };
+    return {
+      features: body.features ?? 0,
+      skipped: body.skipped === true,
+    };
   }
 
   async ragSearch(
