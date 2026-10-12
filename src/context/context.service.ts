@@ -1,4 +1,3 @@
-
 export interface WorkspaceContext {
   workspacePath: string;
   frontendPort: number | null;

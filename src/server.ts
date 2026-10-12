@@ -20,7 +20,9 @@ const swaggerDocument = {
     '/health': { get: { summary: 'Health check' } },
     '/context/current': { get: { summary: 'Active workspace session' } },
     '/context/validate': { get: { summary: 'Validate workspace config' } },
-    '/context/bootstrap': { post: { summary: 'Bootstrap workspace embeddings' } },
+    '/context/bootstrap': {
+      post: { summary: 'Bootstrap workspace embeddings' },
+    },
     '/context/update': { post: { summary: 'Queue incremental embed' } },
     '/chat/intro': { post: { summary: 'Start chat conversation' } },
     '/chat/message': { post: { summary: 'Send chat message' } },

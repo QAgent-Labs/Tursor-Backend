@@ -1,5 +1,10 @@
 import * as fs from 'node:fs';
-import { Router, type Request, type Response, type NextFunction } from 'express';
+import {
+  Router,
+  type Request,
+  type Response,
+  type NextFunction,
+} from 'express';
 import type { AppContainer } from './container';
 import { HttpError } from './lib/http-error';
 import { config } from './lib/config';
@@ -50,7 +55,8 @@ export function createRoutes(app: AppContainer): Router {
         typeof req.body?.workspacePath === 'string'
           ? req.body.workspacePath.trim()
           : '';
-      const result = await app.runOrchestrator.bootstrapWorkspace(workspacePath);
+      const result =
+        await app.runOrchestrator.bootstrapWorkspace(workspacePath);
       res.json(result);
     }),
   );

@@ -299,5 +299,4 @@ export class SupabaseChatService {
       createdAt: row.created_at,
     };
   }
-
 }

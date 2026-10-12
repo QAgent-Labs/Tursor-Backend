@@ -15,6 +15,29 @@ export type CdpFillAction = {
   value: string;
 };
 
+/** Choose an option in a `<select>` by its visible label. */
+export type CdpSelectAction = {
+  type: 'select';
+  selectors: string[];
+  value: string;
+};
+
+export type CdpPressAction = {
+  type: 'press';
+  key: string;
+  selectors?: string[];
+};
+
+export type CdpCheckAction = {
+  type: 'check' | 'uncheck';
+  selectors: string[];
+};
+
+export type CdpHoverAction = {
+  type: 'hover';
+  selectors: string[];
+};
+
 export type CdpWaitForTextAction = {
   type: 'waitForText';
   text: string;
@@ -32,6 +55,10 @@ export type CdpAction =
   | CdpNavigateAction
   | CdpClickAction
   | CdpFillAction
+  | CdpSelectAction
+  | CdpPressAction
+  | CdpCheckAction
+  | CdpHoverAction
   | CdpWaitForTextAction
   | CdpWaitForPathAction;
 
@@ -162,6 +189,16 @@ export function describeAction(action: CdpAction, baseUrl: string): string {
       return `DOM.click ${action.selectors[0] ?? '?'}`;
     case 'fill':
       return `Input.fill ${action.selectors[0] ?? '?'} (mock value)`;
+    case 'select':
+      return `Select "${action.value}" in ${action.selectors[0] ?? '?'}`;
+    case 'press':
+      return `Press ${action.key}`;
+    case 'check':
+      return `Check ${action.selectors[0] ?? '?'}`;
+    case 'uncheck':
+      return `Uncheck ${action.selectors[0] ?? '?'}`;
+    case 'hover':
+      return `Hover ${action.selectors[0] ?? '?'}`;
     case 'waitForText':
       return `Wait for text "${action.text}"`;
     case 'waitForPath':

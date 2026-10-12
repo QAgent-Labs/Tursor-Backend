@@ -32,14 +32,23 @@ type WorkspaceBundle = {
 };
 
 function emptySummary(): ConversationSummary {
-  return { case: '', brief_summary: '', plans: [], cdp_runs: [] };
+  return {
+    case: '',
+    brief_summary: '',
+    plans: [],
+    cdp_runs: [],
+    intent: '',
+    focus_paths: [],
+  };
 }
 
 function parseScreenshots(raw: unknown): string[] {
   if (!Array.isArray(raw)) {
     return [];
   }
-  return raw.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  return raw.filter(
+    (item): item is string => typeof item === 'string' && item.length > 0,
+  );
 }
 
 function asKind(value: unknown): SuiteCaseKind | '' {
@@ -118,6 +127,8 @@ function parseSummary(raw: string): ConversationSummary {
       brief_summary?: unknown;
       plans?: unknown;
       cdp_runs?: unknown;
+      intent?: unknown;
+      focus_paths?: unknown;
     };
     const plans: SummaryPlan[] = [];
     if (Array.isArray(data.plans)) {
@@ -150,6 +161,12 @@ function parseSummary(raw: string): ConversationSummary {
         typeof data.brief_summary === 'string' ? data.brief_summary : '',
       plans,
       cdp_runs: parseCdpRuns(data.cdp_runs),
+      intent: typeof data.intent === 'string' ? data.intent : '',
+      focus_paths: Array.isArray(data.focus_paths)
+        ? data.focus_paths.filter(
+            (path): path is string => typeof path === 'string',
+          )
+        : [],
     };
   } catch {
     return { ...emptySummary(), case: text };
@@ -195,7 +212,9 @@ type GeneratedSuite = {
   }>;
 };
 
-function asGeneratedSuite(raw: TursorAiChatResult['test_suite']): GeneratedSuite | null {
+function asGeneratedSuite(
+  raw: TursorAiChatResult['test_suite'],
+): GeneratedSuite | null {
   if (!raw || typeof raw.feature !== 'string' || !raw.feature.trim()) {
     return null;
   }
@@ -406,6 +425,8 @@ export class ChatOrchestratorService {
     brief_summary: string;
     responseId: string;
     suite: GeneratedSuite | null;
+    intent: string;
+    focusPaths: string[];
   }> {
     await this.ensureTursorAiReady();
     const summary = parseSummary(input.conversation.summary);
@@ -443,6 +464,8 @@ export class ChatOrchestratorService {
       })),
       latest_cdp_steps: latest.latestSteps,
       latest_test_suite: latest.latestSuite,
+      intent: summary.intent,
+      focus_paths: summary.focus_paths,
     });
 
     return {
@@ -450,7 +473,11 @@ export class ChatOrchestratorService {
       case: result.case || summary.case,
       brief_summary: result.brief_summary || summary.brief_summary,
       responseId: asResponseId(result.response_id),
-      suite: asGeneratedSuite(result.test_suite) ?? suiteFromLegacySteps(result.cdp_steps),
+      suite:
+        asGeneratedSuite(result.test_suite) ??
+        suiteFromLegacySteps(result.cdp_steps),
+      intent: result.intent || summary.intent,
+      focusPaths: result.focus_paths ?? summary.focus_paths,
     };
   }
 
@@ -514,6 +541,8 @@ export class ChatOrchestratorService {
       brief_summary: ai.brief_summary,
       plans: [],
       cdp_runs: [],
+      intent: ai.intent,
+      focus_paths: ai.focusPaths,
     };
     await this.supabaseChat.updateSummary(
       bundle.supabase.database,
@@ -608,6 +637,9 @@ export class ChatOrchestratorService {
       brief_summary: ai.brief_summary || stored.brief_summary,
       plans: [...stored.plans, ...savedSuite.plans],
       cdp_runs: stored.cdp_runs,
+      intent: ai.intent || stored.intent,
+      focus_paths:
+        ai.focusPaths.length > 0 ? ai.focusPaths : stored.focus_paths,
     };
     await this.supabaseChat.updateSummary(
       bundle.supabase.database,
