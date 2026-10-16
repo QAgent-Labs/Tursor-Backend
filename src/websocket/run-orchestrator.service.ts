@@ -243,7 +243,8 @@ export class RunOrchestratorService {
       this.gateway.emitRunLog({
         category: 'context',
         level: 'warn',
-        message: 'Context pipeline already in progress — skipping duplicate run.',
+        message:
+          'Context pipeline already in progress — skipping duplicate run.',
       });
       return false;
     }
@@ -269,7 +270,11 @@ export class RunOrchestratorService {
         trigger === 'file_change'
           ? `Updating code context after file change${options?.changedPath ? `: ${options.changedPath}` : ''}.`
           : `Building code context for workspace: ${workspacePath}`,
-      meta: { workspacePath, trigger, changedPath: options?.changedPath ?? null },
+      meta: {
+        workspacePath,
+        trigger,
+        changedPath: options?.changedPath ?? null,
+      },
     });
 
     try {
@@ -489,7 +494,11 @@ export class RunOrchestratorService {
       }
 
       const embedResult = await this.tursorAi.embed(path);
-      await this.buildFeatureMap(path, embedResult.feature_map_needed === true, false);
+      await this.buildFeatureMap(
+        path,
+        embedResult.feature_map_needed === true,
+        false,
+      );
       this.contextService.markContextReady({
         embeddingsDir: embedResult.embeddings_dir,
         filesIndexed: embedResult.files_indexed,

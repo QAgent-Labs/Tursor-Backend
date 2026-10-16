@@ -7,12 +7,7 @@ function defaultBrowsersPath(): string | null {
     process.platform === 'darwin'
       ? [path.join(os.homedir(), 'Library/Caches/ms-playwright')]
       : process.platform === 'win32'
-        ? [
-            path.join(
-              process.env.LOCALAPPDATA ?? os.homedir(),
-              'ms-playwright',
-            ),
-          ]
+        ? [path.join(process.env.LOCALAPPDATA ?? os.homedir(), 'ms-playwright')]
         : [path.join(os.homedir(), '.cache/ms-playwright')];
 
   for (const candidate of candidates) {

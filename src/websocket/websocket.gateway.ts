@@ -113,7 +113,9 @@ export class WebsocketGateway {
   }
 
   handleMessage(data: InboundSocketEvent): void {
-    this.logger.log(`SubscribeMessage("message") payload=${JSON.stringify(data)}`);
+    this.logger.log(
+      `SubscribeMessage("message") payload=${JSON.stringify(data)}`,
+    );
 
     const inboundType = (data as { type?: string })?.type ?? 'unknown';
     this.emitRunLog({
@@ -157,7 +159,10 @@ export class WebsocketGateway {
           typeof data.frontendPort === 'number' && data.frontendPort > 0
             ? data.frontendPort
             : undefined;
-        this.contextService.setWorkspaceContext(data.workspacePath.trim(), port);
+        this.contextService.setWorkspaceContext(
+          data.workspacePath.trim(),
+          port,
+        );
         this.emitRunLog({
           category: 'context',
           level: 'info',
@@ -182,7 +187,8 @@ export class WebsocketGateway {
         this.emitRunLog({
           category: 'context',
           level: 'warn',
-          message: 'Session config received with no workspace or frontend port.',
+          message:
+            'Session config received with no workspace or frontend port.',
         });
       }
       return;
@@ -308,7 +314,11 @@ export class WebsocketGateway {
     });
   }
 
-  sendLog(stepId: string, message: string, category: RunLogCategory = 'cdp'): void {
+  sendLog(
+    stepId: string,
+    message: string,
+    category: RunLogCategory = 'cdp',
+  ): void {
     this.emitRunLog({
       category,
       level: message.toLowerCase().includes('failed') ? 'error' : 'info',

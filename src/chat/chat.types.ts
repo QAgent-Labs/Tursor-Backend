@@ -59,6 +59,8 @@ export type ConversationSummary = {
   brief_summary: string;
   plans: SummaryPlan[];
   cdp_runs: CdpRunRecord[];
+  intent: string;
+  focus_paths: string[];
 };
 
 export type ChatSuiteCase = {

@@ -187,7 +187,10 @@ export class CdpRunnerService {
       });
   }
 
-  private takeEarlyTextWait(waits: EarlyTextWait[], text: string): Promise<void> | null {
+  private takeEarlyTextWait(
+    waits: EarlyTextWait[],
+    text: string,
+  ): Promise<void> | null {
     const index = waits.findIndex((item) => item.text === text);
     if (index === -1) return null;
     const [item] = waits.splice(index, 1);
@@ -228,6 +231,35 @@ export class CdpRunnerService {
         );
         await this.fillFirstMatch(page, action.selectors, action.value);
         onDetail('Fill action completed.');
+        return;
+      case 'select':
+        onDetail(
+          `Selecting "${action.value}" in [${action.selectors.join(', ')}]…`,
+        );
+        await this.selectFirstMatch(page, action.selectors, action.value);
+        onDetail('Select action completed.');
+        return;
+      case 'press':
+        onDetail(`Pressing "${action.key}"…`);
+        await this.pressKey(page, action.key, action.selectors);
+        onDetail('Press action completed.');
+        return;
+      case 'check':
+      case 'uncheck':
+        onDetail(
+          `${action.type === 'check' ? 'Checking' : 'Unchecking'} [${action.selectors.join(', ')}]…`,
+        );
+        await this.setCheckedFirstMatch(
+          page,
+          action.selectors,
+          action.type === 'check',
+        );
+        onDetail(`${action.type} action completed.`);
+        return;
+      case 'hover':
+        onDetail(`Hovering [${action.selectors.join(', ')}]…`);
+        await this.hoverFirstMatch(page, action.selectors);
+        onDetail('Hover action completed.');
         return;
       case 'waitForText': {
         const early = this.takeEarlyTextWait(earlyTextWaits, action.text);
@@ -294,5 +326,88 @@ export class CdpRunnerService {
       }
     }
     throw lastError ?? new Error('No matching fill target');
+  }
+
+  private async selectFirstMatch(
+    page: Page,
+    selectors: string[],
+    value: string,
+  ): Promise<void> {
+    let lastError: Error | undefined;
+    for (const selector of selectors) {
+      try {
+        const locator = page.locator(selector).first();
+        await locator.waitFor({ state: 'visible', timeout: 8_000 });
+        await locator.selectOption({ label: value }, { timeout: 5_000 });
+        return;
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+      }
+    }
+    throw lastError ?? new Error('No matching select');
+  }
+
+  private async pressKey(
+    page: Page,
+    key: string,
+    selectors?: string[],
+  ): Promise<void> {
+    if (!selectors?.length) {
+      await page.keyboard.press(key);
+      return;
+    }
+    let lastError: Error | undefined;
+    for (const selector of selectors) {
+      try {
+        const locator = page.locator(selector).first();
+        await locator.waitFor({ state: 'visible', timeout: 8_000 });
+        await locator.press(key, { timeout: 5_000 });
+        return;
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+      }
+    }
+    throw lastError ?? new Error('No matching key target');
+  }
+
+  private async setCheckedFirstMatch(
+    page: Page,
+    selectors: string[],
+    checked: boolean,
+  ): Promise<void> {
+    let lastError: Error | undefined;
+    for (const selector of selectors) {
+      try {
+        const locator = page.locator(selector).first();
+        await locator.waitFor({ state: 'visible', timeout: 8_000 });
+        if (checked) {
+          await locator.check({ timeout: 5_000 });
+        } else {
+          await locator.uncheck({ timeout: 5_000 });
+        }
+        return;
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+      }
+    }
+    throw lastError ?? new Error('No matching check target');
+  }
+
+  private async hoverFirstMatch(
+    page: Page,
+    selectors: string[],
+  ): Promise<void> {
+    let lastError: Error | undefined;
+    for (const selector of selectors) {
+      try {
+        const locator = page.locator(selector).first();
+        await locator.waitFor({ state: 'visible', timeout: 8_000 });
+        await locator.hover({ timeout: 5_000 });
+        return;
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+      }
+    }
+    throw lastError ?? new Error('No matching hover target');
   }
 }

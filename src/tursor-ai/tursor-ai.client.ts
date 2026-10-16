@@ -73,6 +73,8 @@ export type TursorAiChatRequest = {
       steps: CdpStepDefinition[];
     }>;
   } | null;
+  intent?: string;
+  focus_paths?: string[];
 };
 
 export type TursorAiChatResult = {
@@ -87,6 +89,8 @@ export type TursorAiChatResult = {
   } | null;
   cdp_steps?: CdpStepDefinition[] | null;
   retrieved_chunk_count?: number;
+  intent?: string;
+  focus_paths?: string[];
 };
 
 export class TursorAiClient {
@@ -149,7 +153,9 @@ export class TursorAiClient {
     return (await res.json()) as TursorAiEmbedResult;
   }
 
-  async buildFeatureMap(directoryPath: string): Promise<TursorAiFeatureMapResult> {
+  async buildFeatureMap(
+    directoryPath: string,
+  ): Promise<TursorAiFeatureMapResult> {
     const url = `${this.baseUrl()}/v1/feature-map`;
     const res = await fetch(url, {
       method: 'POST',
