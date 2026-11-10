@@ -26,7 +26,16 @@ const swaggerDocument = {
     '/context/update': { post: { summary: 'Queue incremental embed' } },
     '/chat/intro': { post: { summary: 'Start chat conversation' } },
     '/chat/message': { post: { summary: 'Send chat message' } },
-    '/chat/run': { post: { summary: 'Run a saved CDP plan' } },
+    '/chat/run': {
+      post: {
+        summary:
+          'Run test cases: caseIds (one or a group) or suiteId (whole suite)',
+      },
+    },
+    '/suites/{id}': { get: { summary: 'Suite version with cases and runs' } },
+    '/reports': {
+      post: { summary: 'Generate a suite report (format md or pdf)' },
+    },
     '/chat/conversations': { get: { summary: 'List conversations' } },
     '/chat/conversations/{id}': { get: { summary: 'Get conversation' } },
   },

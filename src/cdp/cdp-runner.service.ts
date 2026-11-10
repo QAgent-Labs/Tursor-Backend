@@ -48,6 +48,7 @@ export class CdpRunnerService {
     bucketConfig: WorkspaceSupabaseBucketConfig,
     callbacks: CdpRunCallbacks,
     steps: CdpStepDefinition[] = demoCdpSteps(),
+    runFolder?: string,
   ): Promise<void> {
     const baseUrl = `http://127.0.0.1:${frontendPort}`;
     const headless = config.cdpHeadless;
@@ -60,8 +61,10 @@ export class CdpRunnerService {
       throw new Error(message);
     }
 
-    const { runId, dir } =
-      this.screenshotStorage.createRunDirectory(workspacePath);
+    const { runId, dir } = this.screenshotStorage.createRunDirectory(
+      workspacePath,
+      runFolder,
+    );
     this.screenshotStorage.registerRunLocation(runId, dir);
     callbacks.onRunStart?.(runId);
 
@@ -77,6 +80,7 @@ export class CdpRunnerService {
       ReturnType<(typeof import('playwright'))['chromium']['launch']>
     > | null = null;
     let activeStep = '';
+    let activeLabel = '';
     const earlyTextWaits: EarlyTextWait[] = [];
 
     try {
@@ -99,6 +103,7 @@ export class CdpRunnerService {
       for (let i = 0; i < steps.length; i += 1) {
         const step = steps[i];
         activeStep = `${step.label} (${step.id})`;
+        activeLabel = step.label;
         callbacks.onStep(step.id, step.label);
         callbacks.onLog(
           step.id,
@@ -138,7 +143,7 @@ export class CdpRunnerService {
         callbacks.onLog(step.id, 'Uploading screenshot to Supabase…');
         const url = await this.supabaseScreenshots.uploadPng(
           runId,
-          step.id,
+          `${String(i + 1).padStart(2, '0')}-${step.id}`,
           buffer,
           bucketConfig,
         );
@@ -155,7 +160,7 @@ export class CdpRunnerService {
       }
 
       callbacks.onLog('run', 'CDP flow finished successfully.');
-      callbacks.onComplete('success', 'CDP flow finished successfully.');
+      callbacks.onComplete('success', 'CDP flow finished successfully.', '');
       this.logger.log(`CDP run ${runId} completed for ${baseUrl}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -164,7 +169,7 @@ export class CdpRunnerService {
         : message;
       this.logger.error(`CDP run failed: ${reason}`);
       callbacks.onLog('run', `CDP run failed: ${reason}`);
-      callbacks.onComplete('fail', reason);
+      callbacks.onComplete('fail', reason, activeLabel);
     } finally {
       if (browser) {
         callbacks.onLog('run', 'Closing Chromium browser…');
@@ -226,8 +231,9 @@ export class CdpRunnerService {
         onDetail('Click action completed.');
         return;
       case 'fill':
+        // Typed values can be test passwords; log only their length.
         onDetail(
-          `Filling first matching selector from [${action.selectors.join(', ')}] with value "${action.value}"…`,
+          `Filling first matching selector from [${action.selectors.join(', ')}] with a ${action.value.length}-character value…`,
         );
         await this.fillFirstMatch(page, action.selectors, action.value);
         onDetail('Fill action completed.');

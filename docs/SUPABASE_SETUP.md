@@ -53,10 +53,18 @@ supabase db push --file Tursor-Backend/scripts/supabase-chat-schema.sql
 |-------|---------|
 | `conversations` | One row per chat. `summary` is JSON: `{ "case", "plans": [{ "id", "title" }] }` |
 | `conversation_messages` | User and assistant text. Assistant metadata may include `cdpStepsId` |
-| `cdp_plans` | One saved CDP plan per generation (`steps` jsonb). Run Test loads this row |
+| `cdp_plans` | Older per-case plans. Only read for conversations from before versioned suites |
 | `generated_tests` | Unused by the current chat flow |
+| `test_modules` | One per workspace and module key (a route such as `/login`) |
+| `test_suites` | One row per suite version. At most 5 versions per module are kept |
+| `test_cases` | Cases of a version; `previous_case_id` links a case to the one it was copied from |
+| `test_runs` | One row per case run: status, runner message, failing step, run folder, screenshot URLs |
+| `prds`, `prd_requirements` | PRDs shared in chat and their numbered requirements with implementation status |
+| `suite_reports` | Generated suite reports (format, file name, storage path, URL) |
 
-The Backend connects with the **service role key**, which bypasses Row Level Security. No RLS policies are required for Tursor's server-side usage.
+The Backend connects with the **service role key**, which bypasses Row Level Security. RLS is enabled on the suite tables with no policies, so the anon key cannot read them. No policies are required for Tursor's server-side usage.
+
+Re-run the schema file after upgrading: every statement is `create ... if not exists`, so existing data is kept.
 
 ### Verify tables
 
@@ -66,7 +74,9 @@ SQL Editor:
 select table_name
 from information_schema.tables
 where table_schema = 'public'
-  and table_name in ('conversations', 'conversation_messages', 'cdp_plans', 'generated_tests');
+  and table_name in ('conversations', 'conversation_messages', 'cdp_plans', 'generated_tests',
+                     'test_modules', 'test_suites', 'test_cases', 'test_runs',
+                     'prds', 'prd_requirements', 'suite_reports');
 ```
 
 ---

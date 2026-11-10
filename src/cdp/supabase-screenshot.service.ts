@@ -86,36 +86,14 @@ export class SupabaseScreenshotService {
 
     const client = this.getClient(bucketConfig);
     const body = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-    const maxAttempts = 5;
-    let lastError: Error | undefined;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const { error } = await client.storage
-        .from(bucket)
-        .upload(objectPath, body, {
-          contentType: 'image/jpeg',
-          upsert: true,
-        });
-
-      if (!error) {
-        lastError = undefined;
-        break;
-      }
-
-      const detail = formatStorageError(error);
-      lastError = new Error(`Supabase upload failed: ${detail}`);
-      this.logger.warn(
-        `Screenshot upload attempt ${attempt}/${maxAttempts} failed (${objectPath}, ${body.length} bytes): ${detail}`,
-      );
-
-      if (attempt < maxAttempts) {
-        await sleep(1000 * attempt);
-      }
-    }
-
-    if (lastError) {
-      throw lastError;
-    }
+    await this.uploadWithRetry(
+      client,
+      bucket,
+      objectPath,
+      body,
+      'image/jpeg',
+      'Screenshot',
+    );
 
     const { data } = client.storage.from(bucket).getPublicUrl(objectPath);
     const publicUrl = data.publicUrl;
@@ -125,5 +103,110 @@ export class SupabaseScreenshotService {
 
     this.logger.debug(`Uploaded screenshot ${objectPath} → ${publicUrl}`);
     return publicUrl;
+  }
+
+  /**
+   * Upload a generated report and return its public URL.
+   * DEVELOPMENT ONLY - NOT SECURE FOR PRODUCTION: the bucket is public, so anyone
+   * with the URL can read the report. Move reports to a private bucket with
+   * signed URLs before production use.
+   */
+  async uploadReport(
+    bucketConfig: WorkspaceSupabaseBucketConfig,
+    objectPath: string,
+    body: Buffer,
+    contentType: string,
+  ): Promise<string> {
+    if (!this.isConfigured(bucketConfig)) {
+      throw new Error(this.missingConfigMessage());
+    }
+    const bucket = bucketConfig.name.trim();
+    const client = this.getClient(bucketConfig);
+    await this.uploadWithRetry(
+      client,
+      bucket,
+      objectPath,
+      body,
+      contentType,
+      'Report',
+    );
+    return client.storage.from(bucket).getPublicUrl(objectPath).data.publicUrl;
+  }
+
+  /** Upload with backoff; connect timeouts to Supabase are usually transient. */
+  private async uploadWithRetry(
+    client: SupabaseClient,
+    bucket: string,
+    objectPath: string,
+    body: Buffer,
+    contentType: string,
+    label: string,
+  ): Promise<void> {
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const { error } = await client.storage
+        .from(bucket)
+        .upload(objectPath, body, { contentType, upsert: true });
+      if (!error) {
+        return;
+      }
+
+      const detail = formatStorageError(error);
+      this.logger.warn(
+        `${label} upload attempt ${attempt}/${maxAttempts} failed (${objectPath}, ${body.length} bytes): ${detail}`,
+      );
+      if (attempt === maxAttempts) {
+        throw new Error(
+          `Supabase ${label.toLowerCase()} upload failed after ${maxAttempts} attempts: ${detail}`,
+        );
+      }
+      await sleep(1000 * attempt);
+    }
+  }
+
+  /** Delete every screenshot under runs/{folder}/ for each run folder. */
+  async removeRunFolders(
+    bucketConfig: WorkspaceSupabaseBucketConfig,
+    runFolders: string[],
+  ): Promise<void> {
+    if (!this.isConfigured(bucketConfig) || runFolders.length === 0) {
+      return;
+    }
+    const bucket = bucketConfig.name.trim();
+    const client = this.getClient(bucketConfig);
+    const paths: string[] = [];
+    for (const folder of runFolders) {
+      const safe = folder.replace(/[^a-zA-Z0-9-_]/g, '');
+      if (!safe) continue;
+      const { data, error } = await client.storage
+        .from(bucket)
+        .list(`runs/${safe}`, { limit: 1000 });
+      if (error) {
+        this.logger.warn(`Could not list runs/${safe}: ${error.message}`);
+        continue;
+      }
+      for (const item of data ?? []) {
+        paths.push(`runs/${safe}/${item.name}`);
+      }
+    }
+    await this.removeObjects(bucketConfig, paths);
+  }
+
+  async removeObjects(
+    bucketConfig: WorkspaceSupabaseBucketConfig,
+    paths: string[],
+  ): Promise<void> {
+    if (!this.isConfigured(bucketConfig) || paths.length === 0) {
+      return;
+    }
+    const client = this.getClient(bucketConfig);
+    for (let i = 0; i < paths.length; i += 100) {
+      const { error } = await client.storage
+        .from(bucketConfig.name.trim())
+        .remove(paths.slice(i, i + 100));
+      if (error) {
+        this.logger.warn(`Could not remove storage objects: ${error.message}`);
+      }
+    }
   }
 }

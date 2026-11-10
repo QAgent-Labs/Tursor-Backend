@@ -1,23 +1,56 @@
 import type { Server, Socket } from 'socket.io';
 import { ContextService } from '../context/context.service';
 import { createLogger } from '../lib/logger';
+import { currentTrace, findTrace } from '../lib/trace';
 import type { RunOrchestratorService } from './run-orchestrator.service';
 import {
+  RUN_LOG_CATEGORIES,
+  RUN_LOG_LEVELS,
   type RunLogCategory,
   type RunLogLevel,
   type RunLogPayload,
   type RunLogSocketEvent,
 } from './run-log.types';
 
+const MAX_RELAYED_MESSAGE = 2000;
+const MAX_RELAYED_META_KEYS = 20;
+
 export type OutboundSocketEvent =
   | { type: 'step_update'; stepId: string; step: string; status: 'running' }
   | { type: 'step_result'; stepId: string; status: 'success' | 'fail' }
   | RunLogSocketEvent
   | { type: 'screenshot'; stepId: string; url: string }
-  | { type: 'cdp_started'; runId: string; conversationId: string | null }
-  | { type: 'complete'; status: 'success' | 'fail' }
+  | {
+      type: 'cdp_started';
+      runId: string;
+      conversationId: string | null;
+      caseId: string | null;
+      batchId: string | null;
+    }
+  | {
+      type: 'complete';
+      status: 'success' | 'fail';
+      caseId: string | null;
+      batchId: string | null;
+    }
+  | {
+      type: 'batch_started';
+      batchId: string;
+      conversationId: string;
+      suiteId: string | null;
+      caseIds: string[];
+    }
+  | {
+      type: 'batch_complete';
+      batchId: string;
+      total: number;
+      passed: number;
+      failed: number;
+    }
   | { type: 'context_building' }
-  | { type: 'feature_map_building' }
+  | { type: 'flow_map_building' }
+  /** The index is being updated in the background; chat keeps working. */
+  | { type: 'context_updating' }
   | { type: 'context_ready' }
   | {
       type: 'context_error';
@@ -103,11 +136,11 @@ export class WebsocketGateway {
 
   private handleDisconnect(client: Socket): void {
     this.logger.log(`Client disconnected: ${client.id}`);
-    this.contextService.clearWorkspaceContext();
+    this.contextService.markDisconnected();
     this.emitRunLog({
       category: 'connection',
       level: 'warn',
-      message: `Client disconnected (${client.id}). Workspace context cleared.`,
+      message: `Client disconnected (${client.id}). The code context is kept for a reconnect.`,
       meta: { clientId: client.id },
     });
   }
@@ -269,14 +302,20 @@ export class WebsocketGateway {
 
   emitRunLog(payload: RunLogPayload): void {
     const level: RunLogLevel = payload.level ?? 'info';
+    const trace = currentTrace();
     const event: RunLogSocketEvent = {
       type: 'log',
+      source: 'backend',
       category: payload.category,
       level,
       message: payload.message,
       timestamp: new Date().toISOString(),
       stepId: payload.stepId,
       meta: payload.meta,
+      durationMs: payload.durationMs,
+      traceId: trace?.traceId,
+      traceKind: trace?.kind,
+      traceLabel: trace?.label,
     };
 
     if (level === 'error') {
@@ -290,6 +329,57 @@ export class WebsocketGateway {
     }
 
     this.emit(event);
+  }
+
+  /**
+   * Forward log events Tursor-AI posted to /logs/ingest. Only known fields are kept,
+   * messages are capped, and the trace's kind and label come from the backend's own record.
+   */
+  relayAiLogs(events: unknown[]): number {
+    let relayed = 0;
+    for (const raw of events) {
+      if (!raw || typeof raw !== 'object') continue;
+      const item = raw as Record<string, unknown>;
+      if (typeof item.message !== 'string' || !item.message.trim()) continue;
+      const traceId = typeof item.traceId === 'string' ? item.traceId : '';
+      const trace = traceId ? findTrace(traceId) : null;
+      const meta =
+        item.meta && typeof item.meta === 'object' && !Array.isArray(item.meta)
+          ? Object.fromEntries(
+              Object.entries(item.meta as Record<string, unknown>).slice(
+                0,
+                MAX_RELAYED_META_KEYS,
+              ),
+            )
+          : undefined;
+      this.emit({
+        type: 'log',
+        source: 'ai',
+        category: (RUN_LOG_CATEGORIES.has(String(item.category))
+          ? item.category
+          : 'system') as RunLogCategory,
+        level: (RUN_LOG_LEVELS.has(String(item.level))
+          ? item.level
+          : 'info') as RunLogLevel,
+        message: item.message.slice(0, MAX_RELAYED_MESSAGE),
+        timestamp:
+          typeof item.timestamp === 'string' &&
+          !Number.isNaN(Date.parse(item.timestamp))
+            ? item.timestamp
+            : new Date().toISOString(),
+        meta,
+        durationMs:
+          typeof item.durationMs === 'number' &&
+          Number.isFinite(item.durationMs)
+            ? item.durationMs
+            : undefined,
+        traceId: trace?.traceId,
+        traceKind: trace?.kind,
+        traceLabel: trace?.label,
+      });
+      relayed += 1;
+    }
+    return relayed;
   }
 
   sendStepUpdate(stepId: string, step: string): void {
@@ -327,13 +417,54 @@ export class WebsocketGateway {
     });
   }
 
-  sendCdpStarted(runId: string, conversationId: string | null): void {
-    this.emit({ type: 'cdp_started', runId, conversationId });
+  sendCdpStarted(
+    runId: string,
+    conversationId: string | null,
+    caseId: string | null = null,
+    batchId: string | null = null,
+  ): void {
+    this.emit({ type: 'cdp_started', runId, conversationId, caseId, batchId });
     this.emitRunLog({
       category: 'cdp',
       level: 'info',
       message: `CDP run ${runId} is streaming screenshots.`,
-      meta: { runId, conversationId },
+      meta: { runId, conversationId, caseId, batchId },
+    });
+  }
+
+  sendBatchStarted(
+    batchId: string,
+    conversationId: string,
+    suiteId: string | null,
+    caseIds: string[],
+  ): void {
+    this.emit({
+      type: 'batch_started',
+      batchId,
+      conversationId,
+      suiteId,
+      caseIds,
+    });
+    this.emitRunLog({
+      category: 'cdp',
+      level: 'info',
+      message: `Running ${caseIds.length} test case(s) one after another.`,
+      meta: { batchId, suiteId, caseIds },
+    });
+  }
+
+  sendBatchComplete(
+    batchId: string,
+    total: number,
+    passed: number,
+    failed: number,
+  ): void {
+    this.emit({ type: 'batch_complete', batchId, total, passed, failed });
+    this.emitRunLog({
+      category: 'system',
+      level: failed === 0 ? 'success' : 'error',
+      message: `Group run finished: ${passed} passed, ${failed} failed of ${total}.`,
+      meta: { batchId, total, passed, failed },
     });
   }
 
@@ -348,8 +479,12 @@ export class WebsocketGateway {
     });
   }
 
-  sendComplete(status: 'success' | 'fail'): void {
-    this.emit({ type: 'complete', status });
+  sendComplete(
+    status: 'success' | 'fail',
+    caseId: string | null = null,
+    batchId: string | null = null,
+  ): void {
+    this.emit({ type: 'complete', status, caseId, batchId });
     this.emitRunLog({
       category: 'system',
       level: status === 'success' ? 'success' : 'error',
@@ -358,12 +493,21 @@ export class WebsocketGateway {
     });
   }
 
-  emitFeatureMapBuilding(): void {
-    this.emit({ type: 'feature_map_building' });
+  emitContextUpdating(): void {
+    this.emit({ type: 'context_updating' });
     this.emitRunLog({
       category: 'context',
       level: 'info',
-      message: 'Building the feature map — please wait…',
+      message: 'Updating code context in the background; chat keeps working.',
+    });
+  }
+
+  emitFlowMapBuilding(): void {
+    this.emit({ type: 'flow_map_building' });
+    this.emitRunLog({
+      category: 'context',
+      level: 'info',
+      message: 'Building the flow map of your app — please wait…',
     });
   }
 
