@@ -3,21 +3,45 @@ import * as path from 'node:path';
 import { config } from '../lib/config';
 
 export class ScreenshotStorageService {
-  createRunDirectory(workspacePath: string | null): {
+  private runsRoot(workspacePath: string | null): string {
+    return workspacePath
+      ? path.join(workspacePath, '.tursor', 'run-screenshots')
+      : path.join(process.env.HOME ?? '/tmp', '.tursor', 'run-screenshots');
+  }
+
+  /**
+   * One folder per run. `runFolder` is a readable name such as
+   * 2026-10-25_14-03-22_login_v3_01-valid-sign-in; a numeric id is used when absent.
+   */
+  createRunDirectory(
+    workspacePath: string | null,
+    runFolder?: string,
+  ): {
     runId: string;
     dir: string;
   } {
-    const runId = `${Date.now()}`;
-    const root = workspacePath
-      ? path.join(workspacePath, '.tursor', 'run-screenshots', runId)
-      : path.join(
-          process.env.HOME ?? '/tmp',
-          '.tursor',
-          'run-screenshots',
-          runId,
-        );
+    const base =
+      (runFolder ?? '').replace(/[^a-zA-Z0-9-_]/g, '') || `${Date.now()}`;
+    const rootDir = this.runsRoot(workspacePath);
+    let runId = base;
+    for (let n = 2; fs.existsSync(path.join(rootDir, runId)); n += 1) {
+      runId = `${base}-${n}`;
+    }
+    const root = path.join(rootDir, runId);
     fs.mkdirSync(root, { recursive: true });
     return { runId, dir: root };
+  }
+
+  /** Remove local screenshot folders of purged runs. Only names inside the runs root. */
+  removeRunFolders(workspacePath: string | null, runFolders: string[]): void {
+    const rootDir = path.resolve(this.runsRoot(workspacePath));
+    for (const folder of runFolders) {
+      const safe = folder.replace(/[^a-zA-Z0-9-_]/g, '');
+      if (!safe) continue;
+      const target = path.resolve(rootDir, safe);
+      if (path.dirname(target) !== rootDir) continue;
+      fs.rmSync(target, { recursive: true, force: true });
+    }
   }
 
   savePng(dir: string, stepId: string, buffer: Buffer): string {

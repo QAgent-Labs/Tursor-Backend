@@ -10,10 +10,18 @@ import type {
 import type { CdpAction, CdpStepDefinition } from '../cdp/cdp-step.types';
 import { TursorAiClient } from '../tursor-ai/tursor-ai.client';
 import { TursorAiRuntimeService } from '../tursor-ai/tursor-ai-runtime.service';
-import { RunOrchestratorService } from '../websocket/run-orchestrator.service';
+import {
+  RunOrchestratorService,
+  runStamp,
+  type CaseRunItem,
+  type RunContext,
+  type RunOutcome,
+  type RunRecorder,
+} from '../websocket/run-orchestrator.service';
 import type {
   CdpRunRecord,
   CdpRunStatus,
+  ChatPrdResult,
   ChatSuite,
   ChatTurnResponse,
   ConversationDto,
@@ -22,14 +30,42 @@ import type {
   SuiteCaseKind,
   SummaryPlan,
 } from './chat.types';
-import type { TursorAiChatResult } from '../tursor-ai/tursor-ai.client';
+import type {
+  TursorAiChatRequest,
+  TursorAiChatResult,
+} from '../tursor-ai/tursor-ai.client';
 import { SupabaseChatService } from './supabase-chat.service';
+import { SupabaseSuiteService } from '../suites/supabase-suite.service';
+import { moduleSlug, slugify, SuiteService } from '../suites/suite.service';
+import type { NewSuiteCase, SuiteDetail } from '../suites/suite.types';
+import { WebsocketGateway } from '../websocket/websocket.gateway';
+import type { RunLogPayload } from '../websocket/run-log.types';
 
 type WorkspaceBundle = {
   workspacePath: string;
   supabase: WorkspaceSupabaseConfig;
   ai: WorkspaceAiConfig;
 };
+
+/** How long a chat turn waits for a code context build that is in progress. */
+const CONTEXT_WAIT_MS = 90_000;
+const INTENT_SUITE_REUSED = 'suite_reused';
+const INTENT_SUITE_STATUS = 'suite_status';
+const PENDING_ACTIONS = new Set([
+  'generate',
+  'reuse',
+  'new_version',
+  'collect_generate',
+  'collect_new_version',
+]);
+
+function asPendingAction(
+  value: unknown,
+): ConversationSummary['pending_action'] {
+  return typeof value === 'string' && PENDING_ACTIONS.has(value)
+    ? (value as ConversationSummary['pending_action'])
+    : '';
+}
 
 function emptySummary(): ConversationSummary {
   return {
@@ -39,6 +75,10 @@ function emptySummary(): ConversationSummary {
     cdp_runs: [],
     intent: '',
     focus_paths: [],
+    active_suite_id: '',
+    pending_action: '',
+    pending_suite_id: '',
+    prd_id: '',
   };
 }
 
@@ -62,13 +102,15 @@ function asText(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID.test(value);
+}
+
 function asResponseId(value: string | undefined): string {
-  const uuid =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  if (value && uuid.test(value)) {
-    return value;
-  }
-  return randomUUID();
+  return isUuid(value) ? value : randomUUID();
 }
 
 function parseCdpRuns(raw: unknown): CdpRunRecord[] {
@@ -90,6 +132,7 @@ function parseCdpRuns(raw: unknown): CdpRunRecord[] {
       feature?: unknown;
       title?: unknown;
       kind?: unknown;
+      suite_id?: unknown;
     };
     if (typeof run.cdp_step_id !== 'string' || !run.cdp_step_id) {
       continue;
@@ -111,6 +154,7 @@ function parseCdpRuns(raw: unknown): CdpRunRecord[] {
       feature: asText(run.feature),
       title: asText(run.title),
       kind: asKind(run.kind),
+      suite_id: asText(run.suite_id),
     });
   }
   return runs;
@@ -129,7 +173,14 @@ function parseSummary(raw: string): ConversationSummary {
       cdp_runs?: unknown;
       intent?: unknown;
       focus_paths?: unknown;
+      active_suite_id?: unknown;
+      pending_action?: unknown;
+      pending_suite_id?: unknown;
+      pending_reuse_suite_id?: unknown;
+      prd_id?: unknown;
     };
+    // Summaries from before the explain-and-confirm flow kept only a reuse offer.
+    const legacyReuse = asText(data.pending_reuse_suite_id);
     const plans: SummaryPlan[] = [];
     if (Array.isArray(data.plans)) {
       for (const item of data.plans) {
@@ -142,6 +193,8 @@ function parseSummary(raw: string): ConversationSummary {
           response_id?: unknown;
           feature?: unknown;
           kind?: unknown;
+          suite_id?: unknown;
+          version?: unknown;
         };
         if (typeof plan.id !== 'string' || !plan.id) {
           continue;
@@ -152,6 +205,8 @@ function parseSummary(raw: string): ConversationSummary {
           response_id: asText(plan.response_id),
           feature: asText(plan.feature),
           kind: asKind(plan.kind),
+          suite_id: asText(plan.suite_id),
+          version: typeof plan.version === 'number' ? plan.version : 0,
         });
       }
     }
@@ -167,6 +222,11 @@ function parseSummary(raw: string): ConversationSummary {
             (path): path is string => typeof path === 'string',
           )
         : [],
+      active_suite_id: asText(data.active_suite_id),
+      pending_action:
+        asPendingAction(data.pending_action) || (legacyReuse ? 'reuse' : ''),
+      pending_suite_id: asText(data.pending_suite_id) || legacyReuse,
+      prd_id: asText(data.prd_id),
     };
   } catch {
     return { ...emptySummary(), case: text };
@@ -204,13 +264,12 @@ function asCdpSteps(raw: unknown): CdpStepDefinition[] | null {
 
 type GeneratedSuite = {
   feature: string;
-  cases: Array<{
-    kind: SuiteCaseKind;
-    title: string;
-    explanation: string;
-    steps: CdpStepDefinition[];
-  }>;
+  moduleKey: string;
+  moduleName: string;
+  cases: NewSuiteCase[];
 };
+
+const MAX_SUITE_CASES = 40;
 
 function asGeneratedSuite(
   raw: TursorAiChatResult['test_suite'],
@@ -221,9 +280,8 @@ function asGeneratedSuite(
   if (!Array.isArray(raw.cases)) {
     return null;
   }
-  const success: GeneratedSuite['cases'] = [];
-  const failure: GeneratedSuite['cases'] = [];
-  const edges: GeneratedSuite['cases'] = [];
+  const order: SuiteCaseKind[] = ['success', 'failure', 'edge'];
+  const cases: NewSuiteCase[] = [];
   for (const item of raw.cases) {
     const kind = asKind(item?.kind);
     if (!kind) {
@@ -241,22 +299,37 @@ function asGeneratedSuite(
           : kind === 'edge'
             ? 'Edge test case'
             : 'Success test case';
-    const explanation =
-      typeof item.explanation === 'string' ? item.explanation.trim() : '';
-    const caseRow = { kind, title, explanation, steps };
-    if (kind === 'success' && success.length === 0) {
-      success.push(caseRow);
-    } else if (kind === 'failure' && failure.length === 0) {
-      failure.push(caseRow);
-    } else if (kind === 'edge' && edges.length < 10) {
-      edges.push(caseRow);
-    }
+    cases.push({
+      kind,
+      title,
+      explanation:
+        typeof item.explanation === 'string' ? item.explanation.trim() : '',
+      steps,
+      requirementIds: Array.isArray(item.requirement_ids)
+        ? item.requirement_ids.filter(
+            (id): id is string => typeof id === 'string' && id.length > 0,
+          )
+        : [],
+    });
   }
-  const cases = [...success, ...failure, ...edges];
+  cases.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
   if (!cases.length) {
     return null;
   }
-  return { feature: raw.feature.trim(), cases };
+  const feature = raw.feature.trim();
+  const moduleKey =
+    typeof raw.module_key === 'string' && raw.module_key.trim()
+      ? raw.module_key.trim()
+      : `feature:${slugify(feature)}`;
+  return {
+    feature,
+    moduleKey,
+    moduleName:
+      typeof raw.module_name === 'string' && raw.module_name.trim()
+        ? raw.module_name.trim()
+        : feature,
+    cases: cases.slice(0, MAX_SUITE_CASES),
+  };
 }
 
 function suiteFromLegacySteps(
@@ -268,28 +341,71 @@ function suiteFromLegacySteps(
   }
   return {
     feature: 'Feature',
+    moduleKey: 'feature:feature',
+    moduleName: 'Feature',
     cases: [
       {
         kind: 'success',
         title: 'Success test case',
         explanation: '',
         steps,
+        requirementIds: [],
       },
     ],
   };
 }
 
-export class ChatOrchestratorService {
+function chatSuiteFrom(detail: SuiteDetail, reused: boolean): ChatSuite {
+  return {
+    feature: detail.suite.feature || detail.module.name,
+    suiteId: detail.suite.id,
+    version: detail.suite.version,
+    moduleKey: detail.module.moduleKey,
+    moduleName: detail.module.name,
+    reused,
+    cases: detail.cases.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      title: item.title,
+      explanation: item.explanation,
+      requirementIds: item.requirementIds,
+    })),
+  };
+}
+
+function plansFrom(detail: SuiteDetail, responseId: string): SummaryPlan[] {
+  return detail.cases.map((item) => ({
+    id: item.id,
+    title: item.title,
+    response_id: responseId,
+    feature: detail.suite.feature || detail.module.name,
+    kind: item.kind,
+    suite_id: detail.suite.id,
+    version: detail.suite.version,
+  }));
+}
+
+export class ChatOrchestratorService implements RunRecorder {
   private readonly logger = createLogger('ChatOrchestratorService');
 
   constructor(
     private readonly contextService: ContextService,
     private readonly validator: WorkspaceConfigValidator,
     private readonly supabaseChat: SupabaseChatService,
+    private readonly supabaseSuites: SupabaseSuiteService,
+    private readonly suites: SuiteService,
     private readonly tursorAi: TursorAiClient,
     private readonly tursorAiRuntime: TursorAiRuntimeService,
     private readonly runOrchestrator: RunOrchestratorService,
+    private readonly gateway: WebsocketGateway,
   ) {}
+
+  private log(payload: RunLogPayload): void {
+    this.gateway.emitRunLog({
+      ...payload,
+      category: payload.category ?? 'chat',
+    });
+  }
 
   private resolveWorkspace(requestedPath?: string): string {
     const active = this.contextService.getWorkspacePath();
@@ -310,7 +426,7 @@ export class ChatOrchestratorService {
     return path;
   }
 
-  private loadWorkspaceBundle(workspacePath: string): WorkspaceBundle {
+  loadWorkspaceBundle(workspacePath: string): WorkspaceBundle {
     const validated = this.validator.validate(workspacePath);
     if (!validated.ok) {
       throw new BadRequestError(validated.error);
@@ -327,6 +443,11 @@ export class ChatOrchestratorService {
     };
   }
 
+  /** The active workspace's config, for callers outside chat (reports). */
+  activeBundle(): WorkspaceBundle {
+    return this.loadWorkspaceBundle(this.resolveWorkspace());
+  }
+
   private async ensureTursorAiReady(): Promise<void> {
     await this.tursorAiRuntime.refresh();
     if (this.tursorAiRuntime.isReachable()) {
@@ -340,38 +461,55 @@ export class ChatOrchestratorService {
     }
   }
 
-  private async loadLatestPlanContext(
+  /** The suite the model should build on: the one offered, or the one in use here. */
+  private async loadWorkingSuite(
     bundle: WorkspaceBundle,
     summary: ConversationSummary,
-    mode: 'intro' | 'chat',
+  ): Promise<TursorAiChatRequest['latest_test_suite']> {
+    const suiteId = summary.pending_suite_id || summary.active_suite_id;
+    if (!suiteId) {
+      return null;
+    }
+    const detail = await this.suites.getDetail(
+      bundle.supabase.database,
+      suiteId,
+      { withRuns: false },
+    );
+    if (!detail || detail.suite.workspacePath !== bundle.workspacePath) {
+      return null;
+    }
+    return {
+      response_id: '',
+      suite_id: detail.suite.id,
+      module_key: detail.module.moduleKey,
+      version: detail.suite.version,
+      feature: detail.suite.feature || detail.module.name,
+      cases: detail.cases.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        title: item.title,
+        steps: item.steps,
+        requirement_ids: item.requirementIds,
+      })),
+    };
+  }
+
+  /** Conversations from before versioned suites keep their plans in cdp_plans. */
+  private async loadLegacyPlanContext(
+    bundle: WorkspaceBundle,
+    summary: ConversationSummary,
   ): Promise<{
     latestSteps: CdpStepDefinition[] | null;
-    latestSuite: {
-      response_id: string;
-      feature: string;
-      cases: Array<{
-        id: string;
-        kind: string;
-        title: string;
-        steps: CdpStepDefinition[];
-      }>;
-    } | null;
+    latestSuite: TursorAiChatRequest['latest_test_suite'];
   }> {
-    if (mode !== 'chat') {
-      return { latestSteps: null, latestSuite: null };
-    }
-    const tagged = summary.plans.filter((plan) => plan.response_id);
+    const legacy = summary.plans.filter((plan) => !plan.suite_id);
+    const tagged = legacy.filter((plan) => plan.response_id);
     const responseId = tagged[tagged.length - 1]?.response_id;
     if (responseId) {
-      const members = summary.plans.filter(
-        (plan) => plan.response_id === responseId,
-      );
-      const cases: Array<{
-        id: string;
-        kind: string;
-        title: string;
-        steps: CdpStepDefinition[];
-      }> = [];
+      const members = legacy.filter((plan) => plan.response_id === responseId);
+      const cases: NonNullable<
+        TursorAiChatRequest['latest_test_suite']
+      >['cases'] = [];
       for (const plan of members) {
         const stored = await this.supabaseChat.getCdpPlan(
           bundle.supabase.database,
@@ -398,7 +536,7 @@ export class ChatOrchestratorService {
         };
       }
     }
-    const latestPlan = summary.plans[summary.plans.length - 1];
+    const latestPlan = legacy[legacy.length - 1];
     if (!latestPlan) {
       return { latestSteps: null, latestSuite: null };
     }
@@ -412,6 +550,31 @@ export class ChatOrchestratorService {
     };
   }
 
+  private async loadPrdContext(
+    bundle: WorkspaceBundle,
+    summary: ConversationSummary,
+  ): Promise<TursorAiChatRequest['prd']> {
+    if (!summary.prd_id) {
+      return null;
+    }
+    const prd = await this.supabaseSuites.getPrd(
+      bundle.supabase.database,
+      summary.prd_id,
+    );
+    if (!prd || prd.workspacePath !== bundle.workspacePath) {
+      return null;
+    }
+    return {
+      prd_id: prd.id,
+      title: prd.title,
+      requirements: prd.requirements.map((item) => ({
+        id: item.id,
+        text: item.text,
+        status: item.status,
+      })),
+    };
+  }
+
   private async completeTurn(
     bundle: WorkspaceBundle,
     input: {
@@ -419,22 +582,43 @@ export class ChatOrchestratorService {
       mode: 'intro' | 'chat';
       conversation: ConversationDto;
     },
-  ): Promise<{
-    reply: string;
-    case: string;
-    brief_summary: string;
-    responseId: string;
-    suite: GeneratedSuite | null;
-    intent: string;
-    focusPaths: string[];
-  }> {
+  ): Promise<TursorAiChatResult & { responseId: string }> {
     await this.ensureTursorAiReady();
     const summary = parseSummary(input.conversation.summary);
-    const latest = await this.loadLatestPlanContext(
-      bundle,
-      summary,
-      input.mode,
-    );
+    const chat = input.mode === 'chat';
+    const working = chat ? await this.loadWorkingSuite(bundle, summary) : null;
+    const legacy =
+      chat && !working
+        ? await this.loadLegacyPlanContext(bundle, summary)
+        : { latestSteps: null, latestSuite: null };
+    const existing = chat
+      ? await this.suites.listExisting(
+          bundle.supabase.database,
+          bundle.workspacePath,
+        )
+      : [];
+    const prd = chat ? await this.loadPrdContext(bundle, summary) : null;
+    if (chat) {
+      this.log({
+        category: 'chat',
+        level: 'debug',
+        message:
+          `Sending the turn to Tursor-AI: ${existing.length} existing suite(s)` +
+          (working
+            ? `, working on v${working.version} of ${working.module_key}`
+            : '') +
+          (summary.pending_action
+            ? `, waiting for an answer to “${summary.pending_action}”`
+            : '') +
+          (prd ? `, PRD “${prd.title}” linked` : '') +
+          '.',
+        meta: {
+          existingSuites: existing.length,
+          workingSuiteId: working?.suite_id ?? null,
+          prdId: prd?.prd_id ?? null,
+        },
+      });
+    }
 
     const result = await this.tursorAi.chatCompletion({
       conversation_id: input.conversation.id,
@@ -462,64 +646,55 @@ export class ChatOrchestratorService {
         title: run.title,
         kind: run.kind,
       })),
-      latest_cdp_steps: latest.latestSteps,
-      latest_test_suite: latest.latestSuite,
+      latest_cdp_steps: legacy.latestSteps,
+      latest_test_suite: working ?? legacy.latestSuite,
       intent: summary.intent,
       focus_paths: summary.focus_paths,
+      existing_suites: existing,
+      pending_action: summary.pending_action,
+      pending_suite_id: summary.pending_suite_id,
+      active_suite_id: summary.active_suite_id,
+      prd,
     });
 
     return {
+      ...result,
       reply: result.reply || 'Something went wrong.',
       case: result.case || summary.case,
       brief_summary: result.brief_summary || summary.brief_summary,
-      responseId: asResponseId(result.response_id),
-      suite:
-        asGeneratedSuite(result.test_suite) ??
-        suiteFromLegacySteps(result.cdp_steps),
       intent: result.intent || summary.intent,
-      focusPaths: result.focus_paths ?? summary.focus_paths,
+      focus_paths: result.focus_paths ?? summary.focus_paths,
+      responseId: asResponseId(result.response_id),
     };
   }
 
-  private async saveSuitePlans(
+  /** Keep a fresh verdict on the suite, so an unchanged flow is not re-reviewed. */
+  private async storeSuiteCheck(
     bundle: WorkspaceBundle,
-    conversationId: string,
-    responseId: string,
-    suite: GeneratedSuite | null,
-  ): Promise<{ plans: SummaryPlan[]; chatSuite: ChatSuite | null }> {
-    if (!suite) {
-      return { plans: [], chatSuite: null };
+    check: TursorAiChatResult['suite_check'],
+  ): Promise<void> {
+    if (!check || check.reused || !check.suite_id || !check.fingerprint) {
+      return;
     }
-    const plans: SummaryPlan[] = [];
-    const cases: ChatSuite['cases'] = [];
-    for (const testCase of suite.cases) {
-      const saved = await this.supabaseChat.saveCdpPlan(
+    if (!isUuid(check.suite_id)) {
+      return;
+    }
+    const { fingerprint, reused: _reused, ...result } = check;
+    try {
+      await this.supabaseSuites.saveSuiteCheck(
         bundle.supabase.database,
-        {
-          conversationId,
-          workspacePath: bundle.workspacePath,
-          title: testCase.title,
-          steps: testCase.steps,
-        },
+        check.suite_id,
+        fingerprint,
+        result,
       );
-      plans.push({
-        id: saved.id,
-        title: testCase.title,
-        response_id: responseId,
-        feature: suite.feature,
-        kind: testCase.kind,
-      });
-      cases.push({
-        id: saved.id,
-        kind: testCase.kind,
-        title: testCase.title,
-        explanation: testCase.explanation,
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.log({
+        category: 'suite',
+        level: 'warn',
+        message: `Could not store the suite check: ${detail}`,
       });
     }
-    return {
-      plans,
-      chatSuite: { feature: suite.feature, cases },
-    };
   }
 
   async intro(requestedWorkspacePath?: string): Promise<ChatTurnResponse> {
@@ -537,12 +712,11 @@ export class ChatOrchestratorService {
     });
 
     const summary: ConversationSummary = {
-      case: ai.case,
-      brief_summary: ai.brief_summary,
-      plans: [],
-      cdp_runs: [],
-      intent: ai.intent,
-      focus_paths: ai.focusPaths,
+      ...emptySummary(),
+      case: ai.case ?? '',
+      brief_summary: ai.brief_summary ?? '',
+      intent: ai.intent ?? '',
+      focus_paths: ai.focus_paths ?? [],
     };
     await this.supabaseChat.updateSummary(
       bundle.supabase.database,
@@ -579,11 +753,12 @@ export class ChatOrchestratorService {
     userMessage: string,
     requestedWorkspacePath?: string,
   ): Promise<ChatTurnResponse> {
-    const text = userMessage.trim();
+    const startedAt = Date.now();
+    const text = typeof userMessage === 'string' ? userMessage.trim() : '';
     if (!text) {
       throw new BadRequestError('message must be non-empty');
     }
-    if (!conversationId?.trim()) {
+    if (typeof conversationId !== 'string' || !conversationId.trim()) {
       throw new BadRequestError('conversationId is required');
     }
 
@@ -602,9 +777,20 @@ export class ChatOrchestratorService {
       );
     }
     if (!this.contextService.isContextReady()) {
-      throw new BadRequestError(
-        'Workspace context is not ready. Wait for embeddings to finish (context_ready).',
-      );
+      // The first build may still be running: wait for it rather than failing the turn.
+      if (this.contextService.isBuilding()) {
+        this.log({
+          category: 'chat',
+          level: 'info',
+          message:
+            'Code context is still being built; this message will be answered when it is ready.',
+        });
+      }
+      if (!(await this.contextService.waitUntilReady(CONTEXT_WAIT_MS))) {
+        throw new BadRequestError(
+          'Code context is not ready yet. Wait for “Code context ready” in the logs, then send again.',
+        );
+      }
     }
 
     await this.supabaseChat.insertMessage(bundle.supabase.database, {
@@ -619,27 +805,149 @@ export class ChatOrchestratorService {
       mode: 'chat',
       conversation,
     });
+    const before = parseSummary(conversation.summary);
+    await this.storeSuiteCheck(bundle, ai.suite_check);
 
-    const savedSuite = await this.saveSuitePlans(
-      bundle,
-      conversationId,
-      ai.responseId,
-      ai.suite,
-    );
+    let prdResult: ChatPrdResult | null = null;
+    let prdId = before.prd_id;
+    if (ai.prd && ai.prd.requirements.length > 0) {
+      const prd = await this.supabaseSuites.insertPrd(
+        bundle.supabase.database,
+        {
+          workspacePath,
+          conversationId,
+          title: ai.prd.title,
+          content: ai.prd.content || text,
+          verdict: ai.prd.verdict,
+          requirements: ai.prd.requirements.map((item) => ({
+            id: item.id,
+            text: item.text,
+            status: item.status,
+            evidence: item.evidence ?? '',
+            gap: item.gap ?? '',
+          })),
+        },
+      );
+      prdId = prd.id;
+      this.log({
+        category: 'prd',
+        level: 'success',
+        message: `Saved PRD “${prd.title}” with ${prd.requirements.length} requirements (${prd.verdict === 'aligned' ? 'no gaps' : 'gaps found'}). Later suites in this conversation link to it.`,
+        meta: { prdId: prd.id, verdict: prd.verdict },
+      });
+      prdResult = {
+        id: prd.id,
+        title: prd.title,
+        verdict: prd.verdict,
+        requirements: prd.requirements.map((item) => ({
+          id: item.id,
+          text: item.text,
+          status: item.status,
+          gap: item.gap,
+        })),
+      };
+    }
+
+    let detail: SuiteDetail | null = null;
+    let reused = false;
+    if (ai.intent === INTENT_SUITE_REUSED && ai.reuse_suite_id) {
+      detail = await this.suites.getDetail(
+        bundle.supabase.database,
+        ai.reuse_suite_id,
+        { withRuns: false },
+      );
+      if (detail && detail.suite.workspacePath !== workspacePath) {
+        detail = null;
+      }
+      reused = detail !== null;
+      if (detail) {
+        this.log({
+          category: 'suite',
+          level: 'success',
+          message: `Reusing ${detail.module.name || detail.module.moduleKey} v${detail.suite.version} as it is (${detail.cases.length} cases).`,
+          meta: { suiteId: detail.suite.id },
+        });
+        // A PRD checked in this conversation also applies to the suite reused for it.
+        if (
+          prdId &&
+          !detail.suite.prdId &&
+          (await this.supabaseSuites.linkPrd(
+            bundle.supabase.database,
+            detail.suite.id,
+            prdId,
+          ))
+        ) {
+          detail = {
+            ...detail,
+            suite: { ...detail.suite, prdId },
+          };
+          this.log({
+            category: 'prd',
+            level: 'info',
+            message: `Linked the conversation's PRD to ${detail.module.name || detail.module.moduleKey} v${detail.suite.version}; its report will include the traceability matrix.`,
+            meta: { suiteId: detail.suite.id, prdId },
+          });
+        }
+      }
+    } else {
+      const generated =
+        asGeneratedSuite(ai.test_suite) ?? suiteFromLegacySteps(ai.cdp_steps);
+      if (generated) {
+        detail = await this.suites.createVersion(bundle.supabase, {
+          workspacePath,
+          conversationId,
+          moduleKey: generated.moduleKey,
+          moduleName: generated.moduleName,
+          feature: generated.feature,
+          prdId: prdId || null,
+          cases: generated.cases,
+        });
+        // Written from today's code, so it is valid for today's code: later checks
+        // with the same fingerprint reuse this verdict instead of re-reviewing.
+        if (ai.suite_fingerprint) {
+          await this.storeSuiteCheck(bundle, {
+            suite_id: detail.suite.id,
+            fingerprint: ai.suite_fingerprint,
+            valid: true,
+            stale_cases: [],
+            uncovered: [],
+            summary: 'Valid when created.',
+            baseline: true,
+            checked_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
 
     const latest = await this.supabaseChat.getConversation(
       bundle.supabase.database,
       conversationId,
     );
     const stored = parseSummary(latest?.summary ?? conversation.summary);
+    const newPlans = detail ? plansFrom(detail, ai.responseId) : [];
     const summary: ConversationSummary = {
-      case: ai.case,
+      case: ai.case ?? stored.case,
       brief_summary: ai.brief_summary || stored.brief_summary,
-      plans: [...stored.plans, ...savedSuite.plans],
+      plans: [
+        ...stored.plans.filter(
+          (plan) => !newPlans.some((item) => item.id === plan.id),
+        ),
+        ...newPlans,
+      ],
       cdp_runs: stored.cdp_runs,
-      intent: ai.intent || stored.intent,
+      // A question about run results is an aside: the flow it interrupts stays current.
+      intent:
+        ai.intent && ai.intent !== INTENT_SUITE_STATUS
+          ? ai.intent
+          : stored.intent,
       focus_paths:
-        ai.focusPaths.length > 0 ? ai.focusPaths : stored.focus_paths,
+        ai.focus_paths && ai.focus_paths.length > 0
+          ? ai.focus_paths
+          : stored.focus_paths,
+      active_suite_id: detail?.suite.id ?? stored.active_suite_id,
+      pending_action: asPendingAction(ai.pending_action),
+      pending_suite_id: ai.pending_action ? (ai.pending_suite_id ?? '') : '',
+      prd_id: prdId,
     };
     await this.supabaseChat.updateSummary(
       bundle.supabase.database,
@@ -647,6 +955,7 @@ export class ChatOrchestratorService {
       JSON.stringify(summary),
     );
 
+    const chatSuite = detail ? chatSuiteFrom(detail, reused) : null;
     const saved = await this.supabaseChat.insertMessage(
       bundle.supabase.database,
       {
@@ -658,22 +967,36 @@ export class ChatOrchestratorService {
         metadata: {
           response_id: ai.responseId,
           conversation_id: conversationId,
-          ...(savedSuite.chatSuite
+          ...(chatSuite
             ? {
-                feature: savedSuite.chatSuite.feature,
-                cases: savedSuite.chatSuite.cases,
+                feature: chatSuite.feature,
+                suite_id: chatSuite.suiteId,
+                version: chatSuite.version,
+                module_key: chatSuite.moduleKey,
+                module_name: chatSuite.moduleName,
+                reused: chatSuite.reused,
+                cases: chatSuite.cases,
               }
             : {}),
+          ...(prdResult ? { prd: prdResult } : {}),
         },
       },
     );
 
+    this.log({
+      category: 'chat',
+      level: 'info',
+      message: `Turn finished in ${((Date.now() - startedAt) / 1000).toFixed(1)}s (${ai.intent || 'reply'}).`,
+      durationMs: Date.now() - startedAt,
+      meta: { intent: ai.intent ?? '' },
+    });
     return {
       conversationId,
       responseId: saved.id,
       reply: ai.reply,
-      suite: savedSuite.chatSuite,
+      suite: chatSuite,
       summary,
+      prd: prdResult,
     };
   }
 
@@ -696,39 +1019,181 @@ export class ChatOrchestratorService {
     };
   }
 
-  async runCdpPlan(
-    cdpStepsId: string,
-    conversationId: string,
-  ): Promise<{ ok: true; cdpStepsId: string }> {
-    const id = cdpStepsId?.trim();
-    const conversation = conversationId?.trim();
-    if (!id) {
-      throw new BadRequestError('cdpStepsId is required');
-    }
-    if (!conversation) {
+  /**
+   * Run test cases: one case, a chosen group, or a whole suite (suiteId).
+   * Cases run one after another; `cdpStepsId` is the older single-plan form.
+   */
+  async runCases(input: {
+    conversationId: string;
+    caseIds?: string[];
+    suiteId?: string;
+    cdpStepsId?: string;
+  }): Promise<{ ok: true; caseIds: string[]; suiteId: string | null }> {
+    const conversationId = input.conversationId?.trim();
+    if (!conversationId) {
       throw new BadRequestError('conversationId is required');
     }
     const workspacePath = this.resolveWorkspace();
     const bundle = this.loadWorkspaceBundle(workspacePath);
-    const plan = await this.supabaseChat.getCdpPlan(
+    const conversation = await this.supabaseChat.getConversation(
       bundle.supabase.database,
-      id,
+      conversationId,
     );
-    if (!plan || plan.workspacePath !== workspacePath) {
-      throw new NotFoundError(`CDP plan ${id} not found`);
+    if (!conversation || conversation.workspacePath !== workspacePath) {
+      throw new NotFoundError(`Conversation ${conversationId} not found`);
     }
-    if (plan.conversationId !== conversation) {
+    if (this.runOrchestrator.isCdpRunning()) {
       throw new BadRequestError(
-        'CDP plan belongs to a different conversation.',
+        'A test run is already in progress. Wait for it to finish.',
       );
     }
-    if (!plan.steps.length) {
-      throw new BadRequestError('CDP plan has no steps');
+
+    const requested = [
+      ...(input.caseIds ?? []),
+      ...(input.cdpStepsId ? [input.cdpStepsId] : []),
+    ]
+      .map((id) => (typeof id === 'string' ? id.trim() : ''))
+      .filter(Boolean);
+    if (!input.suiteId && requested.length === 0) {
+      throw new BadRequestError('Pass caseIds or suiteId to run.');
+    }
+    if (
+      (input.suiteId && !isUuid(input.suiteId)) ||
+      requested.some((id) => !isUuid(id))
+    ) {
+      throw new BadRequestError('caseIds and suiteId must be UUIDs.');
     }
 
-    void this.runOrchestrator.startCdpRun(plan.steps, conversation, id);
-    this.logger.log(`Started CDP plan ${id} (${plan.steps.length} steps)`);
-    return { ok: true, cdpStepsId: id };
+    const database = bundle.supabase.database;
+    const items: CaseRunItem[] = [];
+    let suiteId: string | null = null;
+    const stamp = runStamp();
+
+    if (input.suiteId || requested.length > 0) {
+      const cases = input.suiteId
+        ? await this.supabaseSuites.listCases(database, [input.suiteId])
+        : await this.supabaseSuites.getCases(database, requested);
+      const wanted = input.suiteId
+        ? cases
+        : requested.flatMap((id) => cases.filter((item) => item.id === id));
+      const suiteIds = [...new Set(wanted.map((item) => item.suiteId))];
+      const details = new Map<string, SuiteDetail>();
+      for (const id of suiteIds) {
+        const detail = await this.suites.getDetail(database, id, {
+          withRuns: false,
+        });
+        if (!detail || detail.suite.workspacePath !== workspacePath) {
+          throw new NotFoundError(`Test suite ${id} not found`);
+        }
+        details.set(id, detail);
+      }
+      suiteId = suiteIds.length === 1 ? suiteIds[0] : null;
+      for (const item of wanted) {
+        const detail = details.get(item.suiteId)!;
+        const position =
+          detail.cases.findIndex((entry) => entry.id === item.id) + 1;
+        items.push({
+          caseId: item.id,
+          suiteId: item.suiteId,
+          steps: item.steps,
+          runFolder: [
+            stamp,
+            moduleSlug(detail.module),
+            `v${detail.suite.version}`,
+            `${String(position).padStart(2, '0')}-${slugify(item.title, 32)}`,
+          ].join('_'),
+        });
+      }
+    }
+
+    // Older conversations: ids that are not test cases may be cdp_plans rows.
+    const missing = input.suiteId
+      ? []
+      : requested.filter((id) => !items.some((item) => item.caseId === id));
+    for (const id of missing) {
+      const plan = await this.supabaseChat.getCdpPlan(database, id);
+      if (!plan || plan.workspacePath !== workspacePath) {
+        throw new NotFoundError(
+          `Test case ${id} not found. It may belong to a purged suite version.`,
+        );
+      }
+      if (plan.conversationId !== conversationId) {
+        throw new BadRequestError(
+          'CDP plan belongs to a different conversation.',
+        );
+      }
+      items.push({
+        caseId: id,
+        suiteId: null,
+        steps: plan.steps,
+        runFolder: `${stamp}_${slugify(plan.title || 'plan', 40)}`,
+      });
+    }
+
+    const empty = items.find((item) => item.steps.length === 0);
+    if (empty) {
+      throw new BadRequestError(`Test case ${empty.caseId} has no steps`);
+    }
+    if (items.length === 0) {
+      throw new BadRequestError('That suite has no test cases.');
+    }
+
+    this.log({
+      category: 'cdp',
+      level: 'info',
+      message:
+        items.length === 1
+          ? `Queued 1 test case (${items[0].runFolder}).`
+          : `Queued ${items.length} test cases to run one after another.`,
+      meta: { suiteId, caseIds: items.map((item) => item.caseId) },
+    });
+    void this.runOrchestrator.runCases({ conversationId, suiteId, items });
+    this.logger.log(`Started ${items.length} test case run(s)`);
+    return { ok: true, caseIds: items.map((item) => item.caseId), suiteId };
+  }
+
+  /** RunRecorder: a test_runs row is opened when the browser starts. */
+  async start(
+    context: RunContext & { runFolder: string },
+  ): Promise<string | null> {
+    if (!context.suiteId || !context.caseId) {
+      return null;
+    }
+    const bundle = this.activeBundle();
+    const run = await this.supabaseSuites.insertRun(bundle.supabase.database, {
+      caseId: context.caseId,
+      suiteId: context.suiteId,
+      batchId: context.batchId,
+      conversationId: context.conversationId,
+      runFolder: context.runFolder,
+    });
+    return run.id;
+  }
+
+  /** RunRecorder: close the run row and add the result to the conversation. */
+  async finish(context: RunContext, outcome: RunOutcome): Promise<void> {
+    const bundle = this.activeBundle();
+    if (outcome.testRunId) {
+      await this.supabaseSuites.finishRun(
+        bundle.supabase.database,
+        outcome.testRunId,
+        {
+          status: outcome.status,
+          statusMessage: outcome.statusMessage,
+          failedStep: outcome.failedStep,
+          screenshots: outcome.screenshots,
+        },
+      );
+    }
+    if (context.conversationId && context.caseId) {
+      await this.recordCdpRun(
+        context.conversationId,
+        context.caseId,
+        outcome.status,
+        outcome.statusMessage,
+        outcome.screenshots,
+      );
+    }
   }
 
   async recordCdpRun(
@@ -762,6 +1227,7 @@ export class ChatOrchestratorService {
       feature: plan?.feature ?? '',
       title: plan?.title ?? '',
       kind: plan?.kind ?? '',
+      suite_id: plan?.suite_id ?? '',
     });
     await this.supabaseChat.updateSummary(
       bundle.supabase.database,
@@ -784,7 +1250,7 @@ export class ChatOrchestratorService {
       bundle.supabase.database,
       conversationId,
     );
-    if (!conversation) {
+    if (!conversation || conversation.workspacePath !== workspacePath) {
       throw new NotFoundError(`Conversation ${conversationId} not found`);
     }
     const messages = await this.supabaseChat.listMessages(

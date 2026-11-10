@@ -32,12 +32,15 @@ export type ConversationDto = {
 
 export type SuiteCaseKind = 'success' | 'failure' | 'edge';
 
+/** One test case shown in this conversation (id is a test_cases row, or a legacy cdp_plans row). */
 export type SummaryPlan = {
   id: string;
   title: string;
   response_id: string;
   feature: string;
   kind: SuiteCaseKind | '';
+  suite_id: string;
+  version: number;
 };
 
 export type CdpRunStatus = 'passed' | 'failure';
@@ -52,6 +55,7 @@ export type CdpRunRecord = {
   feature: string;
   title: string;
   kind: SuiteCaseKind | '';
+  suite_id: string;
 };
 
 export type ConversationSummary = {
@@ -61,6 +65,20 @@ export type ConversationSummary = {
   cdp_runs: CdpRunRecord[];
   intent: string;
   focus_paths: string[];
+  /** Suite version this conversation is working on (created or reused here). */
+  active_suite_id: string;
+  /** What Tursor asked at the end of its last reply; the next "yes" acts on it. */
+  pending_action:
+    | ''
+    | 'generate'
+    | 'reuse'
+    | 'new_version'
+    | 'collect_generate'
+    | 'collect_new_version';
+  /** The saved suite that question is about (reuse or new_version). */
+  pending_suite_id: string;
+  /** PRD shared in this conversation; generated cases link to its requirements. */
+  prd_id: string;
 };
 
 export type ChatSuiteCase = {
@@ -68,11 +86,29 @@ export type ChatSuiteCase = {
   kind: SuiteCaseKind;
   title: string;
   explanation: string;
+  requirementIds: string[];
 };
 
 export type ChatSuite = {
   feature: string;
+  suiteId: string;
+  version: number;
+  moduleKey: string;
+  moduleName: string;
+  reused: boolean;
   cases: ChatSuiteCase[];
+};
+
+export type ChatPrdResult = {
+  id: string;
+  title: string;
+  verdict: 'aligned' | 'gaps';
+  requirements: Array<{
+    id: string;
+    text: string;
+    status: 'implemented' | 'partial' | 'missing';
+    gap: string;
+  }>;
 };
 
 export type ChatTurnResponse = {
@@ -81,6 +117,7 @@ export type ChatTurnResponse = {
   reply: string;
   suite: ChatSuite | null;
   summary: ConversationSummary;
+  prd?: ChatPrdResult | null;
 };
 
 export type ConversationListItem = {

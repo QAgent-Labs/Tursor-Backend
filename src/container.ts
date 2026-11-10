@@ -3,6 +3,9 @@ import { ScreenshotStorageService } from './cdp/screenshot-storage.service';
 import { SupabaseScreenshotService } from './cdp/supabase-screenshot.service';
 import { ChatOrchestratorService } from './chat/chat-orchestrator.service';
 import { SupabaseChatService } from './chat/supabase-chat.service';
+import { ReportService } from './suites/report.service';
+import { SuiteService } from './suites/suite.service';
+import { SupabaseSuiteService } from './suites/supabase-suite.service';
 import { ContextService } from './context/context.service';
 import { WorkspaceConfigValidator } from './context/workspace-config.validator';
 import { TursorAiClient } from './tursor-ai/tursor-ai.client';
@@ -21,6 +24,9 @@ export type AppContainer = {
   wsGateway: WebsocketGateway;
   runOrchestrator: RunOrchestratorService;
   supabaseChat: SupabaseChatService;
+  supabaseSuites: SupabaseSuiteService;
+  suites: SuiteService;
+  reports: ReportService;
   chatOrchestrator: ChatOrchestratorService;
 };
 
@@ -47,24 +53,34 @@ export function createContainer(): AppContainer {
   wsGateway.setRunOrchestrator(runOrchestrator);
 
   const supabaseChat = new SupabaseChatService();
+  const supabaseSuites = new SupabaseSuiteService();
+  const suites = new SuiteService(
+    supabaseSuites,
+    supabaseScreenshots,
+    screenshotStorage,
+  );
+  const reports = new ReportService(
+    contextService,
+    validator,
+    suites,
+    supabaseSuites,
+    supabaseScreenshots,
+    tursorAi,
+    wsGateway,
+  );
+  suites.setPanelLog((payload) => wsGateway.emitRunLog(payload));
   const chatOrchestrator = new ChatOrchestratorService(
     contextService,
     validator,
     supabaseChat,
+    supabaseSuites,
+    suites,
     tursorAi,
     tursorAiRuntime,
     runOrchestrator,
+    wsGateway,
   );
-  runOrchestrator.setCdpRunRecorder(
-    (conversationId, cdpStepId, status, statusMessage, screenshots) =>
-      chatOrchestrator.recordCdpRun(
-        conversationId,
-        cdpStepId,
-        status,
-        statusMessage,
-        screenshots,
-      ),
-  );
+  runOrchestrator.setRunRecorder(chatOrchestrator);
 
   return {
     contextService,
@@ -77,6 +93,9 @@ export function createContainer(): AppContainer {
     wsGateway,
     runOrchestrator,
     supabaseChat,
+    supabaseSuites,
+    suites,
+    reports,
     chatOrchestrator,
   };
 }
